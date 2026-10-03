@@ -217,7 +217,9 @@ class TestDemoSections:
 
     def test_report_section_has_the_numbers(self):
         out = ANSI.sub("", render_report_section(enabled=False))
-        assert "steps 9/24" in out and "bash" in out
+        # The wording follows the interface language; the numbers do not.
+        assert "9/24" in out and "bash" in out
+        assert "самое долгое" in out or "slowest" in out
 
     def test_graph_section_has_a_root_and_leaves(self):
         out = ANSI.sub("", render_graph_section(enabled=False))

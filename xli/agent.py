@@ -279,6 +279,10 @@ class Agent:
                 calls=parsed.calls,
                 seconds=time.perf_counter() - step_started,
             )
+            # The step event opens the step; this closes it with the duration,
+            # which is the only number the run report and the TUI cannot
+            # reconstruct from anything else.
+            self.emit("step_done", index=index, seconds=round(step.seconds, 3))
 
             if parsed.calls:
                 step.results = await self._run_calls(parsed.calls)

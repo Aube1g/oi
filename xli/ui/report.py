@@ -105,6 +105,12 @@ def stats_from_events(events: list[dict[str, Any]], *, seconds: float = 0.0) -> 
             stats.max_steps = int(payload.get("max_steps") or stats.max_steps)
             if name and is_sub:
                 stats.agent_steps[name] += 1
+        elif kind == "step_done":
+            # How long the step took. Emitted separately because the step event
+            # fires when the step *starts* — the duration does not exist yet.
+            seconds = float(payload.get("seconds") or 0.0)
+            if seconds > 0:
+                stats.step_seconds.append(round(seconds, 3))
         elif kind == "tool_call":
             stats.tools += 1
             tool = str(payload.get("name", "?"))
@@ -144,18 +150,22 @@ def render_report_ansi(
         enabled = color_depth() != "none"
     depth = depth or color_depth()
 
+    from xli.ui.locale import plural, t
+
     lines: list[str] = []
     agents = ", ".join(stats.agents) if stats.agents else "xli"
-    delegates = f"  {len(stats.agents)} delegate(s)" if stats.agents else ""
+    delegates = f"  {t('delegate_count', n=len(stats.agents))}" if stats.agents else ""
     lines.append(
         paint(f"◆ {agents}", ACCENT_GLOW.stops[1], bold=True, enabled=enabled, depth=depth)
         + paint(delegates, XLI_MINT, enabled=enabled, depth=depth)
     )
     counts = (
-        f"steps {stats.steps}/{stats.max_steps or '?'} · tools {stats.tools} · "
-        f"errors {stats.errors} · {stats.seconds:.1f}s"
+        f"{t('step_word')} {stats.steps}/{stats.max_steps or '?'} · "
+        f"{t('report_tools', n=stats.tools)} · {t('report_errors', n=stats.errors)} · "
+        f"{t('unit_s', n=f'{stats.seconds:.1f}'.replace('.', ','))}"
     ) if stats.steps else (
-        f"tools {stats.tools} · errors {stats.errors} · {stats.seconds:.1f}s"
+        f"{t('report_tools', n=stats.tools)} · {t('report_errors', n=stats.errors)} · "
+        f"{t('unit_s', n=f'{stats.seconds:.1f}'.replace('.', ','))}"
     )
     lines.append(paint(counts, None, dim=True, enabled=enabled, depth=depth))
 
@@ -166,13 +176,13 @@ def render_report_ansi(
         if spark:
             lines.append(
                 paint(spark, XLI_MINT, enabled=enabled, depth=depth)
-                + paint("  calls", None, dim=True, enabled=enabled, depth=depth)
+                + paint(f"  {t('report_calls')}", None, dim=True, enabled=enabled, depth=depth)
             )
     if stats.step_seconds:
         spark = charts.sparkline(stats.step_seconds, width=min(40, len(stats.step_seconds)))
         lines.append(
             paint(spark, None, enabled=enabled, depth=depth)
-            + paint("  step time", None, dim=True, enabled=enabled, depth=depth)
+            + paint(f"  {t('report_step_time')}", None, dim=True, enabled=enabled, depth=depth)
         )
     if stats.tool_counts:
         lines.append("")
@@ -183,17 +193,23 @@ def render_report_ansi(
     slow = stats.slowest()
     if slow and slow[0][1] >= 50:
         lines.append("")
-        lines.append(paint("slowest", None, dim=True, enabled=enabled, depth=depth))
+        lines.append(paint(t("report_slowest"), None, dim=True, enabled=enabled, depth=depth))
         for tool, ms in slow:
             colour = XLI_RED if ms > 5000 else XLI_AMBER
             lines.append(
                 paint(f"  {tool}", colour, enabled=enabled, depth=depth)
-                + paint(f"  {ms / 1000:.1f}s", None, dim=True, enabled=enabled, depth=depth)
+                + paint(
+                    "  " + t("unit_s", n=f"{ms / 1000:.1f}".replace(".", ",")),
+                    None,
+                    dim=True,
+                    enabled=enabled,
+                    depth=depth,
+                )
             )
     if stats.summary:
         lines.append("")
         lines.append(paint(stats.summary.splitlines()[0][:width], None, enabled=enabled, depth=depth))
-    return box(lines, width=width, title="run", tick=tick, enabled=enabled, depth=depth)
+    return box(lines, width=width, title=t("report_run"), tick=tick, enabled=enabled, depth=depth)
 
 
 def report_rows(stats: RunStats, width: int, *, tick: int = 0) -> list[list[tuple[str, str]]]:
@@ -204,6 +220,8 @@ def report_rows(stats: RunStats, width: int, *, tick: int = 0) -> list[list[tupl
     """
     from xli.tui.palette import ACCENT, BAD, DIM, GOOD, HEADING, NORMAL, WARN
 
+    from xli.ui.locale import t
+
     rows: list[list[tuple[str, str]]] = []
     agents = stats.agents or ["xli"]
     head: list[tuple[str, str]] = []
@@ -211,18 +229,22 @@ def report_rows(stats: RunStats, width: int, *, tick: int = 0) -> list[list[tupl
         head.append(("◆ " if index == 0 else "◆ ", agent_color(name)))
         head.append((name + (" " if index == len(agents) - 1 else ", "), agent_color(name)))
     if len(agents) > 1:
-        head.append((f"{len(agents)} delegates", DIM))
+        head.append((t("delegate_count", n=len(agents)), DIM))
     rows.append(head)
 
-    parts = (
-        f"steps {stats.steps}/{stats.max_steps or '?'} · tools {stats.tools} · "
-        f"errors {stats.errors} · {stats.seconds:.1f}s"
-    ) if stats.steps else f"tools {stats.tools} · errors {stats.errors} · {stats.seconds:.1f}s"
+    seconds = t("unit_s", n=f"{stats.seconds:.1f}".replace(".", ","))
+    if stats.steps:
+        parts = (
+            f"{t('step_word')} {stats.steps}/{stats.max_steps or '?'} · "
+            f"{t('report_tools', n=stats.tools)} · {t('report_errors', n=stats.errors)} · {seconds}"
+        )
+    else:
+        parts = f"{t('report_tools', n=stats.tools)} · {t('report_errors', n=stats.errors)} · {seconds}"
     rows.append([(parts, DIM)])
 
     if stats.tool_counts:
         rows.append([
-            ("spark ", DIM),
+            ("", NORMAL),
             (charts.sparkline([count for _, count in stats.tool_counts.most_common()]), GOOD),
         ])
         rows.append([("", NORMAL)])
@@ -231,10 +253,13 @@ def report_rows(stats: RunStats, width: int, *, tick: int = 0) -> list[list[tupl
             rows.append([(label + "  ", HEADING), (rest, ACCENT)])
     slow = stats.slowest()
     if slow and slow[0][1] >= 50:
-        rows.append([("slowest", DIM)])
+        rows.append([(t("report_slowest"), DIM)])
         for tool, ms in slow:
             rows.append(
-                [(f"  {tool}  ", BAD if ms > 5000 else WARN), (f"{ms / 1000:.1f}s", DIM)]
+                [
+                    (f"  {tool}  ", BAD if ms > 5000 else WARN),
+                    (t("unit_s", n=f"{ms / 1000:.1f}".replace(".", ",")), DIM),
+                ]
             )
     if stats.summary:
         rows.append([("", NORMAL)])

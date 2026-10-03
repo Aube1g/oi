@@ -874,12 +874,12 @@ class Tui:
             if not payload.get("ok"):
                 self.state.counters["errors"] = self.state.counters.get("errors", 0) + 1
         elif kind == "step":
-            index = int(payload.get("index", 0) or 0)
-            self.state.counters["steps"] = index
+            self.state.counters["steps"] = int(payload.get("index", 0) or 0)
+            self.state.activity = t("tui_activity_thinking")
+        elif kind == "step_done":
             seconds = payload.get("seconds")
             if isinstance(seconds, (int, float)) and seconds > 0:
                 self.state.step_seconds.append(float(seconds))
-            self.state.activity = t("tui_activity_thinking")
         elif kind == "assistant":
             self.state.activity = t("tui_activity_writing")
         elif kind == "agent":
