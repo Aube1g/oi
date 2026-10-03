@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xli-pro"
+version = "6.0.0"
+description = "XLI PRO v6 — AI coding agent kernel: JSON-RPC core, Cython-accelerated, CLI/TUI/Neovim frontends"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Aubeig"}
+]
+keywords = ["ai", "coding", "assistant", "llm", "mcp", "neovim", "tui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+dependencies = [
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+]
+# The shipping TUI (xli/tui/) is built on curses from the standard library, so
+# nothing in the default install path needs a GUI toolkit. textual is only used
+# by the legacy Textual questionnaire UI in xli/ui/questionnaire/, and pyfiglet
+# has no importer left at all.
+
+[project.optional-dependencies]
+nvim = ["pynvim>=0.5.0"]
+tui = ["textual>=0.52.0", "rich>=13.0.0"]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "ruff>=0.4.0"]
+# Used by the db_client MCP server; its import is guarded and it tells the user
+# what to install, so it stays optional.
+db = ["psycopg2-binary>=2.9.0"]
+embeddings = ["numpy>=1.24.0", "faiss-cpu>=1.7.4", "sentence-transformers>=2.5.0"]
+all = [
+    "pynvim>=0.5.0",
+    "textual>=0.52.0",
+    "rich>=13.0.0",
+    "numpy>=1.24.0",
+    "faiss-cpu>=1.7.4",
+    "sentence-transformers>=2.5.0",
+    "psycopg2-binary>=2.9.0",
+]
+
+[project.scripts]
+xli = "xli.__main__:main"
+xli-pro = "xli.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/xli/xli"
+Repository = "https://github.com/xli/xli"
+Issues = "https://github.com/xli/xli/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["xli*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+"xli.skills" = ["*.md", "**/*.md", "**/*.html", "**/*.js", "**/*.cjs", "**/*.sh"]
+"xli.guides" = ["*.md"]
+"xli.nvim" = ["plugin_root/lua/xli/*.lua", "plugin_root/plugin/*.lua"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311', 'py312']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "UP", "B", "C4", "SIM", "E722"]
+ignore = ["E501", "B905", "B027", "SIM108", "SIM105"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+

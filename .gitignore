@@ -1,0 +1,60 @@
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# XLI runtime
+.xli/
+logs/
+cache/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Cython kernel build output (rebuild with `xli kernel build`)
+xli/_ckernel/
+xli/core/*.c
+*.pyd
+
+# Sessions and per-project agent state
+.xli/
+
+# Vendored reference archive
+beecode-main.zip
