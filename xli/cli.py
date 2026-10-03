@@ -1316,6 +1316,14 @@ def cmd_tui(args: argparse.Namespace) -> int:
 
     config = _load_config(args)
     configure_locale(config)
+    # The terminal is the first precondition: complaining about a missing API
+    # key to a process with no screen to show it on helps nobody.
+    if not sys.stdout.isatty():
+        print(
+            STYLE.yellow(t("tui_needs_terminal")),
+            file=sys.stderr,
+        )
+        return 2
     policy = _build_policy(config, args)
     registry = _build_registry(config, policy, args)
     try:

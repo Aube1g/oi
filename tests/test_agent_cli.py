@@ -436,5 +436,12 @@ class TestCliCommands:
         assert (tmp_path / "plugin" / "xli.lua").is_file()
 
     def test_tui_without_terminal_exits_2(self, capsys):
+        """No screen, no curses: say so and point at the alternatives.
+
+        The wording is Russian (the interface language), so the assertion is on
+        the language-independent part — the commands the user should run
+        instead — rather than on an English word.
+        """
         assert main(["tui"]) == 2
-        assert "terminal" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "xli run" in err and "xli repl" in err

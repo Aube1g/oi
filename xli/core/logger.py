@@ -190,6 +190,19 @@ class StructuredLogger:
         self._error_count = 0
         self._setup_global_hook()
 
+    def redirect_console(self, stream) -> None:
+        """Send the console log to `stream` instead of stderr.
+
+        A full-screen program owns the terminal: anything written to stderr
+        lands *on top of the frame*, and curses never learns about it, so the
+        screen tears — this is exactly what the TUI looked like before the log
+        went to a file. `sys.stderr` alone is not enough, because the handler
+        captured the stream at import time.
+        """
+        for handler in list(self.logger.handlers):
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                handler.setStream(stream)
+
     def _setup_global_hook(self):
         """Catch uncaught exceptions"""
         original = sys.excepthook
@@ -328,6 +341,12 @@ def print_agent_output(agent_name: str, output: str, max_lines: int = 20):
     if len(lines) > max_lines:
         print(f"{COLORS['DIM']}  ... ({len(lines) - max_lines} more lines){COLORS['RESET']}")
     print(f"{comp_color}{'─' * 50}{COLORS['RESET']}")
+
+
+def redirect_console(stream) -> None:
+    """Redirect every live logger's console output to `stream`."""
+    for logger in list(StructuredLogger._instances.values()):
+        logger.redirect_console(stream)
 
 
 def get_logger(name: str) -> StructuredLogger:

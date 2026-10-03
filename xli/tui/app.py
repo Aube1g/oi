@@ -958,9 +958,6 @@ class Tui:
             if self.policy is not None and not self.state.allow_all:
                 registry.confirm_handler = self._confirm_async
 
-            self._debug_log(
-                f"runner start: provider={type(self.provider).__name__} registry={bool(registry)} policy={self.policy!r}"
-            )
             agent = Agent(
                 self.provider,
                 registry=registry,
@@ -1100,6 +1097,27 @@ def run_tui(config, *, initial_task: str = "", registry=None, policy=None, provi
     # characters or bytes.
     _setup_locale()
 
+    # The full-screen program owns the terminal from here on. Logging to stderr
+    # while curses is drawing puts text on the frame that curses does not know
+    # about, and the screen tears: that is what produced the wrapped fragments
+    # ("...initializ...") in the middle of the interface. Diagnostics go to a
+    # file for the duration, and stdout/stderr are captured as well, so a stray
+    # `print` from any library cannot corrupt the display either.
+    log_stream = None
+    saved_out, saved_err = sys.stdout, sys.stderr
+    try:
+        from xli.core.logger import redirect_console
+        from xli.paths import xli_path
+
+        log_path = xli_path("logs") / "tui.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_stream = open(log_path, "a", encoding="utf-8", buffering=1)
+        sys.stdout = log_stream
+        sys.stderr = log_stream
+        redirect_console(log_stream)
+    except OSError:
+        log_stream = None
+
     app = Tui(config, registry=registry, policy=policy, provider=provider)
 
     # ^C in a pty is a signal to the foreground process group, not a keypress.
@@ -1135,3 +1153,12 @@ def run_tui(config, *, initial_task: str = "", registry=None, policy=None, provi
             signal.signal(signal.SIGINT, previous_handler)
         except (ValueError, TypeError):
             pass
+        if log_stream is not None:
+            sys.stdout, sys.stderr = saved_out, saved_err
+            try:
+                from xli.core.logger import redirect_console
+
+                redirect_console(saved_err)
+            except Exception:  # noqa: BLE001 - restoring the terminal matters more
+                pass
+            log_stream.close()

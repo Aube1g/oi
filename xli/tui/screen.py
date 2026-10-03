@@ -62,8 +62,36 @@ class ScreenSession:
         self.cols = cols
         self.rows = rows
         self.env = env or {}
-        self.pid, self.fd = pty.fork()
-        if self.pid == 0:  # child
+        # `pty.fork()` hands the child a terminal whose size is whatever the
+        # kernel defaulted to (80x24); the size is set after the fork, so a
+        # curses program that reads it during startup can see the wrong one
+        # and paint a frame that does not match the screen it ends up with —
+        # which shows up as torn lines and text wrapped onto the next row.
+        # Opening the pair first, sizing it, and only then forking gives the
+        # child a terminal that is already correct when it starts.
+        self.pid, self.fd = self._fork_with_size(cols, rows)
+        self.screen = pyte.Screen(cols, rows)
+        self.stream = pyte.ByteStream(self.screen)
+
+    def _fork_with_size(self, cols: int, rows: int) -> tuple[int, int]:
+        """Fork a child whose controlling terminal is already `cols`x`rows`."""
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        pid = os.fork()
+        if pid:  # parent
+            os.close(slave)
+            return pid, master
+
+        # child
+        try:
+            os.close(master)
+            os.setsid()
+            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+            os.dup2(slave, 0)
+            os.dup2(slave, 1)
+            os.dup2(slave, 2)
+            if slave > 2:
+                os.close(slave)
             environment = os.environ.copy()
             environment.update(self.env)
             environment["TERM"] = environment.get("TERM", "xterm-256color")
@@ -71,14 +99,16 @@ class ScreenSession:
             environment.setdefault("LC_ALL", "C.UTF-8")
             environment["COLUMNS"] = str(cols)
             environment["LINES"] = str(rows)
-            try:
-                os.execvpe(argv[0], argv, environment)
-            except OSError as exc:  # pragma: no cover - only on a bad command
-                os.write(2, f"exec failed: {exc}\n".encode())
-                os._exit(127)
+            os.execvpe(self.argv[0], self.argv, environment)
+        except OSError as exc:
+            os.write(2, f"exec failed: {exc}\n".encode())
+        os._exit(127)
+
+    def resize(self, cols: int, rows: int) -> None:
+        """Resize the terminal and tell the program about it."""
+        self.cols, self.rows = cols, rows
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-        self.screen = pyte.Screen(cols, rows)
-        self.stream = pyte.ByteStream(self.screen)
+        self.screen.resize(rows, cols)
 
     # ------------------------------------------------------------------ input
     def send(self, keys: str | bytes) -> None:
