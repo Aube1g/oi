@@ -20,7 +20,15 @@ import sys
 from typing import Any
 
 from xli.core.logger import StructuredLogger
-from xli.mcp.transport import StdioTransport
+import time
+
+from xli.mcp.transport import (
+    HTTPTransport,
+    SSETransport,
+    StdioTransport,
+    Transport,
+    TransportError,
+)
 
 logger = StructuredLogger("xli.mcp.client")
 
@@ -46,24 +54,62 @@ def server_command(name: str) -> list[str]:
 
 
 class MCPClient:
-    """Launches and talks to the bundled stdio MCP servers."""
+    """Launches and talks to the bundled and externally configured MCP servers."""
 
     def __init__(self, timeout: float = DEFAULT_TIMEOUT):
         self.timeout = timeout
-        self._transports: dict[str, StdioTransport] = {}
+        self._transports: dict[str, Transport] = {}
         self._next_id = 1
         logger.log_structured("INFO", "mcp.client", "Initialized")
 
     # ------------------------------------------------------------- transport
-    def _transport(self, server_name: str) -> StdioTransport:
+    def _server_info(self, server_name: str) -> dict:
+        """The registry entry for a server, without importing it twice.
+
+        A client built for a name that is not in the registry still works: the
+        bundled-server convention (`python -m xli.mcp.servers.<name>`) is the
+        fallback, which is what a caller who knows the name expects.
+        """
+        try:
+            from xli.mcp.registry import get_registry
+
+            return get_registry().get_server(server_name) or {}
+        except Exception:  # noqa: BLE001 - the client must work without a registry
+            return {}
+
+    def _transport(self, server_name: str) -> Transport:
         transport = self._transports.get(server_name)
         if transport is not None:
             return transport
-        command = server_command(server_name)
+
+        info = self._server_info(server_name)
+        timeout = float(info.get("tool_timeout") or self.timeout)
+        startup = float(info.get("startup_timeout") or 20.0)
+        env = dict(info.get("env") or {})
+        url = str(info.get("url") or "")
+        command = info.get("command")
+
         try:
-            transport = StdioTransport(command)
+            if url and str(info.get("transport") or "http") in ("http", "sse", "streamable-http"):
+                transport = (
+                    SSETransport(url, env=env, timeout=timeout, startup_timeout=startup)
+                    if str(info.get("transport")) == "sse"
+                    else HTTPTransport(url, env=env, timeout=timeout, startup_timeout=startup)
+                )
+            else:
+                transport = StdioTransport(
+                    list(command) if command else server_command(server_name),
+                    env=env,
+                    timeout=timeout,
+                    startup_timeout=startup,
+                )
         except OSError as exc:
             raise MCPError(f"could not start {server_name}: {exc}") from exc
+
+        if info.get("enabled") is False:
+            logger.log_structured(
+                "WARN", "mcp.client", f"{server_name} is disabled in the config but was called anyway"
+            )
         self._transports[server_name] = transport
         return transport
 
@@ -79,17 +125,14 @@ class MCPClient:
             "params": params,
         }
         try:
-            raw = transport.send(request)
+            reply = transport.send(request)
+        except TransportError as exc:
+            raise MCPError(f"{server_name}: {exc}") from exc
         except (OSError, ValueError) as exc:
             raise MCPError(f"{server_name}: {exc}") from exc
 
-        if not raw or not raw.strip():
+        if not reply:
             raise MCPError(f"{server_name}: no response to {method}")
-
-        try:
-            reply = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise MCPError(f"{server_name}: malformed response: {exc}") from exc
 
         if "error" in reply:
             err = reply["error"] or {}
@@ -116,7 +159,55 @@ class MCPClient:
         result = self._request(server_name, "tools/list", {})
         if not isinstance(result, dict):
             return []
-        return result.get("tools", []) or []
+        tools = result.get("tools", []) or []
+        info = self._server_info(server_name)
+        if info.get("external") and (info.get("enabled_tools") or info.get("disabled_tools")):
+            from xli.mcp.config import allowed_tools
+
+            names = {tool.get("name") for tool in tools if isinstance(tool, dict)}
+            keep = set(allowed_tools(info, list(names)))
+            tools = [tool for tool in tools if isinstance(tool, dict) and tool.get("name") in keep]
+        return tools
+
+    def probe(self, server_name: str) -> dict:
+        """Start a server, shake hands, and report what it is.
+
+        This is the check a user needs before trusting a config file copied
+        from somewhere: does the command exist, does it answer, and what does
+        it call itself?
+        """
+        info = self._server_info(server_name)
+        transport = self._transport(server_name)
+        started = time.perf_counter()
+        reply = transport.send(
+            {
+                "jsonrpc": "2.0",
+                "id": "_probe",
+                "method": "tools/list",
+                "params": {},
+            }
+        )
+        elapsed = time.perf_counter() - started
+
+        if "error" in reply:
+            error = reply["error"] or {}
+            raise MCPError(f"{server_name}: {error.get('message', 'unknown error')}")
+
+        result = reply.get("result") if isinstance(reply, dict) else None
+        tools = (result or {}).get("tools", []) if isinstance(result, dict) else []
+        names = [tool.get("name") for tool in tools if isinstance(tool, dict)]
+        if info.get("external") and (info.get("enabled_tools") or info.get("disabled_tools")):
+            from xli.mcp.config import allowed_tools
+
+            names = allowed_tools(info, names)
+        return {
+            "server": server_name,
+            "transport": info.get("transport", "stdio"),
+            "source": info.get("source", "bundled"),
+            "seconds": round(elapsed, 3),
+            "tools": names,
+            "tool_count": len(names),
+        }
 
     def close(self, server_name: str | None = None) -> None:
         """Shut down one server, or all of them."""

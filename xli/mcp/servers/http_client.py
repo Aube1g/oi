@@ -5,7 +5,7 @@ MCP HTTP Client — curl-like requests, API testing
 
 import json
 import sys
-from xli.mcp.serverkit import filter_arguments, tool_descriptors
+from xli.mcp.serverkit import filter_arguments, shake_hands, tool_descriptors
 try:
     import httpx
     HAS_HTTPX = True
@@ -106,6 +106,12 @@ TOOLS = {
 }
 
 def handle_request(request):
+    # initialize / ping / notifications, per the protocol. See
+    # xli.mcp.serverkit.shake_hands for why this is not the server's job.
+    early = shake_hands(request)
+    if early is not None:
+        return early
+
     method = request.get("method")
     req_id = request.get("id")
 

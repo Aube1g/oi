@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 from difflib import get_close_matches
-from xli.mcp.serverkit import filter_arguments, tool_descriptors
+from xli.mcp.serverkit import filter_arguments, shake_hands, tool_descriptors
 
 HISTORY_FILE = Path.home() / ".zsh_history"
 if not HISTORY_FILE.exists():
@@ -59,6 +59,12 @@ TOOLS = {
 
 # --- стандартный обработчик ---
 def handle_request(req):
+    # initialize / ping / notifications, per the protocol. See
+    # xli.mcp.serverkit.shake_hands for why this is not the server's job.
+    early = shake_hands(req)
+    if early is not None:
+        return early
+
     method = req.get("method")
     rid = req.get("id")
     if method == "tools/list":

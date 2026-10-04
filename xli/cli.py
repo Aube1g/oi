@@ -762,14 +762,115 @@ def _human_bytes(size: int) -> str:
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:
-    from xli.mcp.registry import SERVERS
+    """`xli mcp [list|tools|test|reload]` — see what the agent can reach.
+
+    The list is bundled servers *and* the ones the user already configured for
+    another client, because those are the interesting ones. External entries
+    carry their source file, so "where did this come from" has an answer.
+    """
+    from xli.mcp.registry import MCPRegistry
+
+    registry = MCPRegistry()
+    action = getattr(args, "action", "list") or "list"
+    target = getattr(args, "server", "") or ""
+
+    if action == "reload":
+        count = registry.reload_external()
+        if args.json:
+            _emit({"external": count, "servers": registry.servers}, True)
+            return EXIT_OK
+        print("  " + t("mcp_reloaded", count=count))
+        registry = MCPRegistry()
+        action = "list"
+
+    if action == "tools" or action == "test":
+        if not target:
+            print("  " + t("mcp_unknown", server=""))
+            return EXIT_USAGE
+        info = registry.get_server(target)
+        if info is None:
+            print("  " + t("mcp_unknown", server=target))
+            return EXIT_USAGE
+        from xli.mcp.client import MCPClient
+
+        if action == "test":
+            try:
+                with MCPClient() as client:
+                    report = client.probe(target)
+            except Exception as exc:  # noqa: BLE001 - the report is the point
+                if args.json:
+                    _emit({"server": target, "ok": False, "error": str(exc)}, True)
+                    return EXIT_FAILED
+                print("  " + t("mcp_test_fail", server=target, error=str(exc)))
+                return EXIT_FAILED
+            if args.json:
+                _emit({**report, "ok": True}, True)
+                return EXIT_OK
+            print(
+                "  "
+                + t(
+                    "mcp_test_ok",
+                    server=target,
+                    count=report["tool_count"],
+                    seconds=f"{report['seconds']:.2f}".replace(".", ","),
+                    transport=report["transport"],
+                )
+            )
+            for name in report["tools"]:
+                print(f"    {name}")
+            return EXIT_OK
+
+        # `tools`: ask the server if it is external, otherwise trust the table.
+        names = list(info.get("tools") or [])
+        if info.get("external"):
+            from xli.mcp.client import MCPClient
+
+            try:
+                with MCPClient() as client:
+                    names = [
+                        tool.get("name", "")
+                        for tool in asyncio.run(client.list_tools(target))
+                    ]
+            except Exception as exc:  # noqa: BLE001 - a live server can be down
+                if args.json:
+                    _emit({"server": target, "tools": [], "error": str(exc)}, True)
+                    return EXIT_FAILED
+                print("  " + t("mcp_tools_unavailable", server=target, error=str(exc)))
+                return EXIT_FAILED
+        if args.json:
+            _emit({"server": target, "tools": names}, True)
+            return EXIT_OK
+        print("  " + t("mcp_tools_of", server=target, count=len(names)))
+        for name in names:
+            print(f"    {name}")
+        return EXIT_OK
 
     if args.json:
-        _emit(SERVERS, True)
+        _emit({"servers": registry.servers, "external": registry.external}, True)
         return EXIT_OK
-    for name, info in sorted(SERVERS.items()):
-        state = STYLE.green("on") if info.get("enabled") else STYLE.dim("off")
-        print(f"  {state}  {STYLE.bold(name):<18} {info.get('description', '')}")
+
+    enabled = registry.list_enabled()
+    print("  " + STYLE.bold(t("mcp_title", total=len(registry.servers), enabled=len(enabled))))
+    for name, info in sorted(registry.servers.items()):
+        state = STYLE.green("вкл") if info.get("enabled") else STYLE.dim("выкл")
+        label = t(f"mcp_server_{name}")
+        if label == f"mcp_server_{name}":
+            label = info.get("description", "")
+        kind = (
+            STYLE.dim(f"[{t('mcp_external')}]")
+            if info.get("external")
+            else STYLE.dim(f"[{t('mcp_bundled')}]")
+        )
+        print(f"  {state:>10} {kind} {STYLE.bold(name):<18} {label}")
+        if info.get("external"):
+            where = info.get("url") or " ".join(info.get("command") or [])
+            print(f"            {STYLE.dim(t('mcp_source'))}: {info.get('source', '')} — {where}")
+    if registry.external:
+        sources = sorted({info.get("source", "") for info in registry.external.values()})
+        print("  " + t("mcp_external_title", count=len(registry.external), sources=", ".join(sources)))
+    else:
+        print("  " + STYLE.dim(t("mcp_no_external")))
+    print("  " + STYLE.dim(t("mcp_hint")))
     return EXIT_OK
 
 
@@ -1650,6 +1751,10 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="run `xli <command> --help` for details",
     )
     parser.add_argument("--version", action="version", version=f"xli {VERSION}")
+    parser.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="подробные логи в stderr (по умолчанию только предупреждения)",
+    )
 
     sub = parser.add_subparsers(dest="command")
 
@@ -1733,8 +1838,11 @@ def build_parser() -> argparse.ArgumentParser:
     skills.add_argument("--json", action="store_true")
     skills.set_defaults(func=cmd_skills)
 
-    mcp = sub.add_parser("mcp", help="list MCP servers")
-    mcp.add_argument("action", choices=["list"], nargs="?", default="list")
+    mcp = sub.add_parser("mcp", help="MCP servers: list, tools, test, reload")
+    mcp.add_argument(
+        "action", choices=["list", "tools", "test", "reload"], nargs="?", default="list"
+    )
+    mcp.add_argument("server", nargs="?", default="", help="имя сервера для tools/test")
     mcp.add_argument("--json", action="store_true")
     mcp.set_defaults(func=cmd_mcp)
 

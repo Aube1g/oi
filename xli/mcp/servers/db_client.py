@@ -6,7 +6,7 @@ MCP DB Client — SQL queries, schema introspection
 import json
 import sys
 from urllib.parse import urlparse
-from xli.mcp.serverkit import filter_arguments, tool_descriptors
+from xli.mcp.serverkit import filter_arguments, shake_hands, tool_descriptors
 
 def query_sql(connection_string, query, params=None):
     """Execute SQL query safely (read-only by default)"""
@@ -128,6 +128,12 @@ TOOLS = {
 }
 
 def handle_request(request):
+    # initialize / ping / notifications, per the protocol. See
+    # xli.mcp.serverkit.shake_hands for why this is not the server's job.
+    early = shake_hands(request)
+    if early is not None:
+        return early
+
     method = request.get("method")
     req_id = request.get("id")
 

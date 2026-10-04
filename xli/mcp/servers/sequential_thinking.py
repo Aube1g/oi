@@ -9,7 +9,7 @@ as a pure-Python stdio MCP server so it works without Node.js.
 """
 import json
 import sys
-from xli.mcp.serverkit import filter_arguments, tool_descriptors
+from xli.mcp.serverkit import filter_arguments, shake_hands, tool_descriptors
 
 # In-memory thought chains keyed by a caller-chosen context id so multiple
 # agents or tasks can think independently within the same process.
@@ -87,6 +87,12 @@ TOOLS = {
 
 # --- standard request handler ---
 def handle_request(req):
+    # initialize / ping / notifications, per the protocol. See
+    # xli.mcp.serverkit.shake_hands for why this is not the server's job.
+    early = shake_hands(req)
+    if early is not None:
+        return early
+
     method = req.get("method")
     rid = req.get("id")
     if method == "tools/list":

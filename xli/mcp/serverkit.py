@@ -82,3 +82,57 @@ def filter_arguments(fn: Callable, arguments: dict[str, Any]) -> dict[str, Any]:
     if has_var_keyword:
         return dict(arguments)
     return {key: value for key, value in arguments.items() if key in accepted}
+
+
+# ---------------------------------------------------------------- handshake
+#: The protocol revision the bundled servers announce. Kept as a literal: the
+#: bundled servers are stdlib-only by policy, and importing the transport (and
+#: through it the logger, and through that the whole core) would drag a
+#: dependency graph larger than the servers themselves.
+PROTOCOL_VERSION = "2025-06-18"
+
+
+def shake_hands(request: dict[str, Any]) -> dict[str, Any] | None:
+    """Answer the protocol methods every MCP client sends before tool calls.
+
+    `initialize` is not optional in the protocol, and a server that answers it
+    with "unknown method" looks broken to a strict client (and to `xli mcp
+    test`). The bundled servers grew up talking to XLI's own client, which
+    never asked — the same reason `notifications/initialized` was ignored.
+
+    Returns the reply, or None when the request is not the protocol layer's
+    business and the server should handle it the way it always has.
+    """
+    method = (request or {}).get("method")
+    request_id = (request or {}).get("id")
+
+    if method == "initialize":
+        params = (request or {}).get("params") or {}
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "protocolVersion": str(params.get("protocolVersion") or PROTOCOL_VERSION),
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": "xli", "version": _version()},
+            },
+        }
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": request_id, "result": {}}
+    if method == "tools/list":
+        return None  # the server builds its own, from its own tool table
+    if isinstance(method, str) and method.startswith("notifications/"):
+        # A notification gets no reply by protocol. An id-less response is
+        # ignored by every client (it matches no pending request), which is
+        # cheaper than teaching each server's loop to stay silent.
+        return {"jsonrpc": "2.0", "id": None, "result": None}
+    return None
+
+
+def _version() -> str:
+    try:
+        from xli.version import VERSION
+
+        return str(VERSION)
+    except Exception:  # noqa: BLE001 - a version string is not worth a failure
+        return "0"

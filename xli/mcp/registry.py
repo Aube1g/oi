@@ -110,6 +110,22 @@ SERVERS = {
     "tools": ["web_search", "fetch_page"],
     "enabled": True,
          },
+    "codebase": {
+        "description": "Code intelligence: symbol definitions, call sites, imports, outlines",
+        "tools": [
+            "overview", "find_symbol", "find_usages", "module_imports",
+            "importers_of", "outline", "search_code", "read_slice", "stats",
+        ],
+        "enabled": True,
+    },
+    "notion": {
+        "description": "Notion pages and databases (needs NOTION_TOKEN)",
+        "tools": [
+            "search", "read_page", "get_database", "query_database",
+            "create_page", "append_text",
+        ],
+        "enabled": True,
+    },
 }
 
 
@@ -132,9 +148,44 @@ class MCPRegistry:
         # enable()/disable(), or a disabled server would stay disabled for
         # every registry built later in the same process.
         self.servers = {name: dict(info) for name, info in SERVERS.items()}
+        self.external: dict[str, dict] = {}
         self._config = config
+        self._load_external()
         self._apply_config(config if config is not None else self._load_config())
         logger.log_structured("INFO", "mcp.registry", f"Loaded {len(self.servers)} servers")
+
+    def _load_external(self) -> None:
+        """Servers configured for Claude Code, Codex, or XLI itself.
+
+        They are ordinary entries in `servers` from here on, flagged
+        `external`, because every consumer — `mcp_list`, the CLI, the client —
+        already reads that shape. What is *not* ordinary is where they come
+        from, which is why the source path travels with them.
+        """
+        try:
+            from xli.mcp.config import discover
+
+            found = discover()
+        except Exception as exc:  # noqa: BLE001 - a broken config file is not fatal
+            logger.log_error("mcp.registry", "external MCP config unreadable", exc=exc)
+            return
+        for name, server in found.items():
+            info = server.to_info()
+            # A bundled server with the same name stays bundled: the user's
+            # file should not silently replace code shipped with XLI.
+            if name in self.servers:
+                info["shadowed_bundled"] = True
+                continue
+            self.external[name] = info
+            self.servers[name] = info
+
+    def reload_external(self) -> int:
+        """Re-read the external config files. Returns how many servers exist."""
+        for name in list(self.external):
+            self.servers.pop(name, None)
+            self.external.pop(name, None)
+        self._load_external()
+        return len(self.external)
 
     @staticmethod
     def _load_config():
@@ -164,6 +215,11 @@ class MCPRegistry:
                 self.servers[name]["enabled"] = False
             elif name in forced_on:
                 self.servers[name]["enabled"] = True
+            elif self.servers[name].get("external"):
+                # An external server's own `enabled = false` is a decision the
+                # user made in Claude Code's file; XLI must not undo it just
+                # because the server is not in its disabled list.
+                self.servers[name]["enabled"] = bool(self.servers[name].get("enabled", True))
 
     def _persist(self, name: str, enabled: bool) -> bool:
         """Record the change in the config so it survives a restart."""
@@ -190,8 +246,21 @@ class MCPRegistry:
             return False
 
     def get_server(self, name: str) -> dict | None:
-        """Get server definition"""
+        """Get server definition. External entries are live: they can be
+        reloaded from disk without restarting the process."""
         return self.servers.get(name)
+
+    def is_external(self, name: str) -> bool:
+        return bool(self.servers.get(name, {}).get("external"))
+
+    def command_for(self, name: str) -> list[str] | None:
+        """How to launch an external server, if it declares a command."""
+        info = self.servers.get(name, {})
+        command = info.get("command")
+        return list(command) if command else None
+
+    def url_for(self, name: str) -> str:
+        return str(self.servers.get(name, {}).get("url") or "")
 
     def is_enabled(self, name: str) -> bool:
         """Check if server is enabled"""

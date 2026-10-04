@@ -90,6 +90,18 @@ def colorize(text: str, color: str) -> str:
     return f"{color}{text}{COLORS['RESET']}"
 
 
+def _console_level() -> int:
+    """How loud the console is. `XLI_LOG_CONSOLE_LEVEL` names the threshold.
+
+    Warnings and errors by default: a user running `xli` is reading output,
+    not internal diagnostics, and every line is in ~/.xli/logs/xli.log anyway.
+    """
+    name = os.environ.get("XLI_LOG_CONSOLE_LEVEL", "").strip().upper()
+    if name in ("", "NONE", "OFF"):
+        return logging.WARNING
+    return getattr(logging, name, logging.WARNING) if name != "ALL" else logging.DEBUG
+
+
 def format_log_line(timestamp: str, level: str, component: str, message: str,
                      use_colors: bool = True) -> str:
     """Format a single log line with colors"""
@@ -183,7 +195,12 @@ class StructuredLogger:
         # caller may pipe or parse (`xli tools schema --json`), and a stray log
         # line there turns valid JSON into garbage.
         ch = logging.StreamHandler(sys.stderr)
-        ch.setLevel(logging.INFO)
+        # The console gets warnings and errors by default; the file gets
+        # everything. `XLI_LOG_CONSOLE_LEVEL=INFO` (or DEBUG) brings the
+        # chatter back for debugging, and the front ends that own the terminal
+        # raise it rather than lowering the file's level.
+        ch.setLevel(_console_level())
+        self._console_handler = ch
         ch.setFormatter(logging.Formatter("%(message)s"))
         self.logger.addHandler(ch)
 
@@ -216,6 +233,16 @@ class StructuredLogger:
     def log_structured(self, level: str, component: str, message: str,
                        details: dict | None = None, exc_info: str | None = None):
         """Write structured JSONL log + colored console output"""
+        # The console level is re-read here rather than only at construction:
+        # `python -m xli` imports the package (and builds loggers) before its
+        # entry point can set the level, so a level decided once would be
+        # decided before the user's choice existed.
+        handler = getattr(self, "_console_handler", None)
+        if handler is not None:
+            wanted = _console_level()
+            if handler.level != wanted:
+                handler.setLevel(wanted)
+
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
         entry = {
