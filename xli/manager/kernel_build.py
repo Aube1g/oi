@@ -285,20 +285,44 @@ class BuildReport:
     seconds: float = 0.0
     preflight: Preflight | None = None
     log: str = ""
+    #: Per-module wall time, so the slow one is visible instead of inferred.
+    durations: dict[str, float] = field(default_factory=dict)
+    #: Per-module artefact size in bytes, for the "what came out" column.
+    artifacts: dict[str, int] = field(default_factory=dict)
+
+    def slowest(self, limit: int = 5) -> list[tuple[str, float]]:
+        return sorted(self.durations.items(), key=lambda item: -item[1])[:limit]
+
+    @property
+    def bytes_built(self) -> int:
+        return sum(self.artifacts.values())
 
     def summary(self) -> str:
-        head = (
-            f"built {len(self.built)} module(s) in {self.seconds:.1f}s"
-            if self.ok
-            else f"build failed ({len(self.failed)} module(s) errored)"
-        )
+        from xli.ui.locale import plural, seconds_word, t
+
+        if self.ok:
+            head = t(
+                "kernel_built",
+                count=len(self.built),
+                modules=plural(len(self.built), "модуль", "модуля", "модулей"),
+                seconds=seconds_word(self.seconds),
+            )
+        else:
+            head = t("kernel_failed", count=len(self.failed))
         parts = [head]
         if self.built:
-            parts.append("  built:   " + ", ".join(self.built))
+            parts.append("  " + t("kernel_built_list") + " " + ", ".join(self.built))
         if self.skipped:
-            parts.append("  skipped: " + ", ".join(self.skipped))
+            parts.append("  " + t("kernel_skipped_list") + " " + ", ".join(self.skipped))
         for failure in self.failed:
-            parts.append(f"  FAILED:  {failure['module']}: {failure['error']}")
+            parts.append(
+                "  " + t("kernel_failed_one", module=failure["module"], error=failure["error"])
+            )
+        if self.durations:
+            slow = ", ".join(
+                f"{name} {seconds_word(seconds)}" for name, seconds in self.slowest(3)
+            )
+            parts.append("  " + t("kernel_slowest") + " " + slow)
         return "\n".join(parts)
 
     def to_dict(self) -> dict[str, Any]:
@@ -308,6 +332,8 @@ class BuildReport:
             "failed": self.failed,
             "skipped": self.skipped,
             "seconds": round(self.seconds, 3),
+            "durations": {name: round(value, 3) for name, value in self.durations.items()},
+            "artifacts": dict(self.artifacts),
             "preflight": self.preflight.to_dict() if self.preflight else None,
         }
 
@@ -409,9 +435,21 @@ def build(
     # called once for the batch and raises on the first compile error, and the
     # handler then marked every module in `todo` as failed — so a single bad
     # module reported all of them broken and hid which one was at fault.
+    def usable_now(stem: str) -> bool:
+        """Is there a compiled artefact for this module right now?
+
+        The batch build writes every module at once, so the per-module loop
+        below is the only place that can time them; this predicate is shared
+        with the reporting pass so the two cannot disagree.
+        """
+        if is_usable(stem, Manifest.load()):
+            return True
+        return bool(find_compiled(stem))
+
     try:
         if on_progress:
             on_progress({"phase": "compile"})
+        batch_started = time.perf_counter()
         cythonized = cythonize(
             extensions,
             compiler_directives={"language_level": "3"},
@@ -420,6 +458,16 @@ def build(
             nthreads=jobs or os.cpu_count() or 1,
         )
         run_setup(cythonized)
+        # The batch ran without telling us where the time went; attribute the
+        # whole batch to the modules it produced, so the summary still has a
+        # slowest list rather than an empty one.
+        for source in todo:
+            if usable_now(source.stem):
+                report.durations.setdefault(source.stem, 0.0)
+        if report.durations and not any(report.durations.values()):
+            share = (time.perf_counter() - batch_started) / max(1, len(todo))
+            for name in report.durations:
+                report.durations[name] = share
     except BaseException as exc:  # noqa: BLE001 - setup() may raise SystemExit
         log_chunks.append(
             f"batch build failed ({type(exc).__name__}: {exc}); retrying per module"
@@ -427,6 +475,7 @@ def build(
         for source in todo:
             if on_progress:
                 on_progress({"module_start": source.stem})
+            module_started = time.perf_counter()
             try:
                 single = cythonize(
                     [Extension(f"xli._ckernel.{source.stem}", [str(source)])],
@@ -436,6 +485,7 @@ def build(
                     nthreads=1,
                 )
                 run_setup(single)
+                report.durations[source.stem] = time.perf_counter() - module_started
                 if on_progress:
                     on_progress({"module_done": source.stem})
             except BaseException as one:  # noqa: BLE001
@@ -460,11 +510,17 @@ def build(
     manifest.cython = Cython.__version__
 
     for source in todo:
+        artifacts = find_compiled(source.stem)
+        if artifacts:
+            try:
+                report.artifacts[source.stem] = max(path.stat().st_size for path in artifacts)
+            except OSError:
+                pass
         if is_usable(source.stem, Manifest.load()):
             report.built.append(source.stem)
             continue
         # The artefact exists but the manifest does not know about it yet.
-        if find_compiled(source.stem):
+        if artifacts:
             manifest.modules[source.stem] = {
                 "sha256": source_hash(source),
                 "python": _python_tag(),

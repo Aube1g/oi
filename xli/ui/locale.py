@@ -165,6 +165,28 @@ _EN: dict[str, str] = {
     "mcp_server_lsp": "language server (not implemented yet)",
     "mcp_server_codebase": "code navigation: symbols, call sites, imports, structure",
     "mcp_server_notion": "Notion pages and databases (needs NOTION_TOKEN)",
+
+    "kernel_built": "built {count} {modules} in {seconds}",
+    "kernel_failed": "build failed: {count} error(s)",
+    "kernel_built_list": "built:",
+    "kernel_skipped_list": "skipped (already built):",
+    "kernel_failed_one": "{module}: {error}",
+    "kernel_slowest": "slowest:",
+    "kernel_phase_preflight": "checking toolchain",
+    "kernel_phase_cythonize": "preparing sources",
+    "kernel_phase_compile": "compiling",
+    "kernel_phase_link": "linking",
+    "kernel_phase_done": "done",
+    "kernel_title": "XLI kernel build",
+    "kernel_elapsed": "elapsed {seconds}",
+    "kernel_modules_done": "{done} of {total}",
+    "kernel_artifacts": "produced: {count} {files}, {size} total",
+    "kernel_file_word_one": "file",
+    "kernel_file_word_few": "files",
+    "kernel_file_word_many": "files",
+    "kernel_warnings": "compiler warnings: {count}",
+    "kernel_no_changes": "nothing to build — everything is up to date",
+
 }
 
 _RU: dict[str, str] = {
@@ -311,6 +333,28 @@ _RU: dict[str, str] = {
     "mcp_server_lsp": "языковой сервер (пока не реализован)",
     "mcp_server_codebase": "навигация по коду: символы, вызовы, импорты, структура",
     "mcp_server_notion": "страницы и базы Notion (нужен NOTION_TOKEN)",
+
+
+    "kernel_built": "собрано {count} {modules} за {seconds}",
+    "kernel_failed": "сборка не удалась: ошибок {count}",
+    "kernel_built_list": "собрано:",
+    "kernel_skipped_list": "пропущено (уже собрано):",
+    "kernel_failed_one": "{module}: {error}",
+    "kernel_slowest": "дольше всех:",
+    "kernel_phase_preflight": "проверка окружения",
+    "kernel_phase_cythonize": "подготовка исходников",
+    "kernel_phase_compile": "компиляция",
+    "kernel_phase_link": "сборка связи",
+    "kernel_phase_done": "готово",
+    "kernel_title": "сборка ядра XLI",
+    "kernel_elapsed": "прошло {seconds}",
+    "kernel_modules_done": "{done} из {total}",
+    "kernel_artifacts": "получилось: {count} {files}, всего {size}",
+    "kernel_file_word_one": "файл",
+    "kernel_file_word_few": "файла",
+    "kernel_file_word_many": "файлов",
+    "kernel_warnings": "предупреждений компилятора: {count}",
+    "kernel_no_changes": "нечего собирать — всё уже собрано и не менялось",
 
 }
 
