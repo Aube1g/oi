@@ -1,79 +1,152 @@
-# xli
+# AGENTS.md — как работать внутри XLI
 
-**Language:** Python
-**Framework:** Unknown
+Этот файл читают двое: человек, который открыл репозиторий впервые, и агент,
+которому поручили в нём что-то починить. Оба хотят одного — понять, где что
+лежит и какие правила здесь не обсуждаются.
 
-## Project Structure
+Язык документа — русский, потому что язык интерфейса русский. Код, имена,
+комментарии в коде — как принято в проекте: имена и докстринги английские,
+пользовательские строки — только через `xli/ui/locale.py`.
 
-- `xli/core/__init__.py`
-- `xli/core/config.py`
-- `xli/core/logger.py`
-- `xli/core/env.py`
-- `xli/core/skills.py`
-- `xli/core/memory.py`
-- `xli/core/cache.py`
-- `xli/core/agent.py`
-- `xli/core/chain.py`
-- `xli/core/planner.py`
-- `xli/core/streaming.py`
-- `xli/core/diff_engine.py`
-- `xli/core/sandbox.py`
-- `xli/core/vector_store.py`
-- `xli/core/git.py`
+---
 
-## Coding Patterns
+## Что это
 
-### Async/Await
-Uses async/await patterns
+XLI — автономный кодовый агент. Одно решение определяет всё остальное:
+**агент — это сервер, интерфейсы — клиенты.**
 
 ```
-name for inbox")
-    return parser.parse_args()
-
-
-async def main():
-    args = parse_args()
-    config = get_config()
-
-    if args.init:
-        print("Scanning project...")
-        path = init_projec
+CLI (xli run / repl)   TUI (xli tui)   Neovim (lua)   веб (web/)
+        └──────────────┬────────────────────┘
+                JSON-RPC 2.0 / ndjson
+                       ▼
+              xli kernel (serve/stdio)
+   цикл агента · инструменты · права · сессии · MCP · конфиг
 ```
 
-### OOP Style
-Uses classes with methods
+Отсюда правила, которые нельзя нарушать:
 
+* **Никакой логики интерфейса в ядре.** Ядро отвечает на методы RPC и отдаёт
+  события; рисование, цвета, панели — в `xli/tui`, `xli/ui`, `xli/nvim/`.
+* **Подключение без сети.** `--provider fake` прогоняет полный цикл агента
+  офлайн: это способ проверить фронтенд, не имея ключей.
+
+## Карта репозитория
+
+| Путь | Что там |
+| --- | --- |
+| `xli/agent.py` | цикл хода: план → вызов → результат → ответ; события `step`, `tool_call`, `tool_result`, `step_done` |
+| `xli/parse/` | разбор ответа модели в вызовы инструментов (все реальные формы: теги, JSON, `tool_calls`, `read(path=...)`) |
+| `xli/tools/` | инструменты агента: `builtin.py`, `structured.py`, `charts_tool.py`; реестр — `registry.py` |
+| `xli/tools/base.py` | `Tool`, `ToolSpec`, `Param`, `ToolResult`, декоратор `@tool` |
+| `xli/providers/` | провайдеры моделей: `openai`, `anthropic`, `fake` (офлайн) |
+| `xli/mcp/` | MCP: клиент, транспорты, реестр, `servers/` (22 встроенных сервера) |
+| `xli/tui/` | полноэкранный интерфейс: `app.py` (цикл и клавиши), `frame.py`, `panels.py`, `palette.py`, `screen.py` (pty-харнесс для тестов) |
+| `xli/ui/` | общий слой отображения: `markdown.py`, `charts.py`, `graph.py`, `report.py`, `locale.py`, `ansi.py` |
+| `xli/core/` | инфраструктура: конфиг, логгер, окружение, кэш, git, sandbox |
+| `xli/permissions/` | политика прав: что можно читать, писать и запускать |
+| `xli/kernel/` | JSON-RPC ядро; `methods.py` — таблица методов |
+| `xli/agents/` | суб-агенты: роли, запуск, свод результата |
+| `xli/manager/` | сборка Cython-ядра: `kernel_build.py`, `BuildReport` |
+| `xli/nvim/plugin_root/` | плагин Neovim (Lua, `lua/xli/*.lua`) |
+| `xli/xpi/` | внутренние плагины XPI |
+| `tests/` | 1500+ тестов; `test_tui_screen.py` гоняет TUI в настоящем pty |
+
+## Команды
+
+```bash
+python3 -m xli run "задача"          # один ход агента
+python3 -m xli repl                  # интерактивный REPL
+python3 -m xli tui                   # полноэкранный TUI (нужен терминал)
+python3 -m xli tui --provider fake   # TUI без сети и ключей
+python3 -m xli mcp                   # MCP-серверы: list/tools/test/reload
+python3 -m xli graph                 # граф зависимостей (текстом)
+python3 -m xli kernel build          # сборка Cython-ядра
+python3 -m pytest -q                 # весь набор тестов
+python3 -m pytest -q tests/test_tui_screen.py   # TUI на настоящем pty
 ```
-Logger
 
-logger = StructuredLogger("xli.config")
+Для офлайн-работы без ключей: `pip install --break-system-packages -q pytest pyte
+httpx python-dotenv pytest-asyncio pyyaml`, затем `--provider fake`.
 
+## Правила интерфейса
 
-class Config:
-    """XLI Configuration"""
+1. **Только русский, UTF-8.** Ни одной английской строки в том, что видит
+   пользователь: заголовки, панели, подписи, ошибки, логи в консоли. Строки
+   берутся из `xli/ui/locale.py` (`t("ключ")`); таблицы `_RU` и `_EN` обязаны
+   совпадать по ключам — это проверяет `test_ui_summary_and_locale.py`.
+2. **Без эмодзи.** Только текстовые глифы: `◆ ◇ ✓ ✗ ◐ ☐ ├ │ ─ ╭ ╰ ▎ ▌`.
+3. **Числа по-русски**: `2,3 млн`, `45 тыс`, запятая как десятичный разделитель
+   (`xli.ui.locale.number_word`).
+4. **Графы — только текстовые.** Никакого SVG и картинок: график должен
+   копироваться в отчёт и читаться по SSH. Словарь — `xli/ui/charts.py`,
+   инструмент агента — `chart` в `xli/tools/charts_tool.py`.
+5. **Один стиль отображения на всех.** Markdown-стили (`xli/ui/markdown.py`)
+   должны быть отрисованы и в TUI (`xli/tui/app.py::STYLE_ATTRS`), и в ANSI
+   (`xli/ui/ansi.py`); тест `test_every_markdown_style_has_a_painter_entry`
+   не даст забыть.
+6. **Терминал — это терминал.** Ширина строки считается в клетках
+   (`xli.ui.text.display_width`), а не в байтах и не в символах. Цветные
+   строки нельзя выравнивать через `f"{text:<{width}}"` — escape-коды
+   считаются как видимые символы, и рамка разъезжается.
 
-    DEFAULTS = {
-        "provider": "mistral",
-        "model": "mistral-large-latest",
-        "temperatu
-```
+## Правила кода
 
-### Type Hints
-Uses typing annotations
+* **Циклы импортов запрещены.** `python3 -m pytest tests/test_dependency_graph.py`
+  падает, если появился цикл на уровне модулей; единственные разрешённые
+  отложенные циклы перечислены там же. Если хочется импортировать что-то из
+  `xli.tools.registry` внутри `xli/tools/base.py` — не надо, передайте реестр
+  параметром (так сделано в `is_mutating`).
+* **Правки — минимальные.** Не переписывайте работающее рядом с задачей.
+* **Каждый починенный баг получает тест**, который падал бы до правки.
+  В проекте это не формальность: почти каждый тест в `tests/` — это
+  зафиксированный реальный дефект, и в докстринге написано, какой.
+* **Комментарий объясняет «почему», а не «что».** Пример хорошего
+  комментария — в `xli/mcp/transport.py` про баннеры в stdout.
+* **Тесты не зависят от сети** и не требуют ключей; для моделей — `--provider
+  fake` или `FakeProvider(responses=[...])`.
+* **Ничего не ломать.** Перед коммитом: `python3 -m pytest -q` (сейчас
+  1500+ тестов, 9 пропущено — это нормально: пропуски там, где нет Cython или
+  нет терминала).
 
-```
-efault",
-        "project": "default",
-    }
+## Как добавить инструмент
 
-    def __init__(self):
-        self.config_dir = Path.home() / ".xli"
-        self.config_file = self.config_dir / "config.json"
-        self.env_file = 
-```
+1. Функция `async def my_tool(...) -> ToolResult` в `xli/tools/*.py`,
+   декоратор `@tool("имя", "описание для модели", [Param(...)], tags=[...])`.
+2. Добавить в `BUILTIN_TOOLS` (`xli/tools/builtin.py`) и в `BUILD_TOOLS`
+   (`xli/core/plan_build.py`) — тест `test_plan_build.py` сверяет список
+   с реестром и не даст забыть.
+3. Если результат многострочный (график, таблица) — вернуть его в `summary`:
+   именно `summary` печатают CLI, REPL и TUI.
+4. Описание инструмента — английское (его читает модель), всё, что видит
+   пользователь, — русское.
+5. Добавить строку в `xli/ui/summary.py::summarise_call`, чтобы вызов читался
+   одной фразой, и глиф в `xli/tui/palette.py::TOOL_GLYPH`.
 
-## Conventions
+## Как добавить MCP-сервер
 
-- Has test directory
+* Встроенный: модуль в `xli/mcp/servers/`, в нём `TOOLS`, `handle_request`
+  (первым делом `shake_hands(request)` — initialize/ping/notifications) и
+  `main()`; зарегистрировать в `xli/mcp/registry.py::SERVERS` с русским
+  описанием в `locale.py` (`mcp_server_<имя>`).
+* Внешний — ничего писать не нужно: XLI читает `.mcp.json` проекта,
+  `~/.claude.json`, `~/.codex/config.toml` и `~/.xli/mcp.json` и запускает
+  сервер сам (`xli mcp test ИМЯ` проверяет, что он отвечает).
+* Серверы обязаны быть на стандартной библиотеке — никаких новых зависимостей
+  в `pyproject.toml` ради одного сервера.
 
-## Key Dependencies
+## Правки в TUI
+
+* Клавиши читаются байтами (`xli/tui/app.py::_read_bytes`), а не через
+  `get_wch()`: тот съедает одиночный Escape.
+* Логи во время полноэкранной сессии — только в файл
+  (`logger.redirect_console`), иначе они рисуются поверх кадра.
+* Ширина кадра — `getmaxyx()[1] - 1`; в правую нижнюю клетку писать нельзя.
+* Проверять на настоящем терминале: `tests/test_tui_screen.py` (pty + pyte) и
+  `python3 scripts/tui_probe.py --cols 96 --rows 24 -- ...`.
+
+## Коммиты
+
+Один коммит — одна мысль; сообщение объясняет, **что было сломано** и почему
+стало иначе, а не «обновил файл». Ветка работы — та, что выдана сессией;
+пушить только в неё.
