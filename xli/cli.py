@@ -386,8 +386,14 @@ def _render_event(kind: str, payload: dict[str, Any]) -> None:
         mark = _colour(t("ok"), "#7EE7B0" if ok else "#FF7A95", bold=not ok)
         ms = payload.get("duration_ms")
         timing = _colour(f" {ms:.0f}ms", dim=True) if isinstance(ms, (int, float)) and ms >= 250 else ""
-        summary = str(payload.get("summary", ""))[:140]
-        print(badge + _colour(f"  │ [{mark}]", dim=True) + f" {summary}" + timing)
+        summary = str(payload.get("summary", ""))
+        head, *rest = summary.splitlines() or [""]
+        print(badge + _colour(f"  │ [{mark}]", dim=True) + f" {head[:140]}" + timing)
+        if rest:
+            # A chart or a structured result is several lines: print it whole
+            # under the status line rather than cutting the picture in half.
+            for line in rest[:24]:
+                print(badge + _colour("  │   ", dim=True) + line)
     elif kind == "agent":
         phase = payload.get("phase")
         if is_sub_agent and phase == "start":

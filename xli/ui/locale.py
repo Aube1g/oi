@@ -389,6 +389,41 @@ def t(key: str, **kwargs: object) -> str:
         return template
 
 
+def number_word(value: float) -> str:
+    """`2,3 млн` — the way a Russian speaker writes a large number.
+
+    The comma is the decimal separator and the suffixes are short forms, both
+    of which are how numbers appear in Russian text; `2.3M` is an English
+    convention that reads as a foreign string in a Russian interface.
+    """
+    number = float(value)
+    sign = "−" if number < 0 else ""
+    number = abs(number)
+    if lang() == "ru":
+        if number >= 1_000_000_000:
+            return f"{sign}{number / 1_000_000_000:.1f}".replace(".", ",") + " млрд"
+        if number >= 1_000_000:
+            return f"{sign}{number / 1_000_000:.1f}".replace(".", ",") + " млн"
+        if number >= 10_000:
+            return f"{sign}{number / 1_000:.0f} тыс"
+        if number >= 1_000:
+            return f"{sign}{number / 1_000:.1f}".replace(".", ",") + " тыс"
+    else:
+        if number >= 1_000_000_000:
+            return f"{sign}{number / 1_000_000_000:.1f}B"
+        if number >= 1_000_000:
+            return f"{sign}{number / 1_000_000:.1f}M"
+        if number >= 1_000:
+            return f"{sign}{number / 1_000:.1f}k"
+    if number == int(number):
+        return f"{sign}{int(number)}"
+    if number >= 100:
+        return f"{sign}{number:.0f}"
+    if number >= 10:
+        return f"{sign}{number:.1f}".replace(".", ",")
+    return f"{sign}{number:.2f}".replace(".", ",")
+
+
 def configure(config: object | None) -> None:
     """Read `ui.lang` from a loaded Config (or anything with .get)."""
     value: str | None = None

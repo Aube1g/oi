@@ -96,7 +96,11 @@ class Repl:
                 _print(f"\033[2m  -> {name} {summarise_call(name, args)}\033[0m")
         elif kind == "tool_result":
             mark = f"\033[32m{t('ok')}\033[0m" if payload.get("ok") else f"\033[31m{t('fail')}\033[0m"
-            _print(f"\033[2m     [{mark}] {str(payload.get('summary', ''))[:140]}\033[0m")
+            summary = str(payload.get("summary", ""))
+            head, *rest = summary.splitlines() or [""]
+            _print(f"\033[2m     [{mark}] {head[:140]}\033[0m")
+            for line in rest[:24]:
+                _print(f"\033[2m       {line}\033[0m")
         elif kind == "repair":
             _print(f"\033[33m{t('repaired', detail=payload.get('detail'))}\033[0m")
         elif kind == "warning":

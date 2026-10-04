@@ -971,6 +971,8 @@ class Tui:
                 reason = t(f"stop_{result.stopped_reason}") if result.stopped_reason else ""
                 self.append_event(
                     "note",
+                    # Charts and other multi-line results keep their shape in
+                    # the transcript: a wrapped graph is unreadable.
                     {"text": f"{result.summary}" + (f"  ·  {reason}" if reason else "")},
                 )
             except Exception as exc:  # noqa: BLE001 - keep the UI alive

@@ -42,6 +42,21 @@ def summarise_call(name: str, args: dict[str, Any] | None) -> str:
                 return truncate(value.strip().splitlines()[0], 60)
         return "?"
 
+    if name == "chart":
+        kind = str(args.get("kind", "?"))
+        raw = args.get("items") or args.get("series") or args.get("rows") or args.get("matrix") or ""
+        pieces = 0
+        try:
+            import json
+
+            value = json.loads(raw) if isinstance(raw, str) and raw.strip() else raw
+            pieces = len(value) if isinstance(value, list) else 0
+        except Exception:  # noqa: BLE001 - the summary is cosmetic
+            pieces = 0
+        title = str(args.get("title") or "").strip()
+        tail = f" — {pieces}" if pieces else ""
+        return f"{kind}{tail}" + (f" «{title}»" if title else "")
+
     if name == "grep":
         pattern = str(args.get("pattern", "?"))
         where = args.get("path")

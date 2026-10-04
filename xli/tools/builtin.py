@@ -25,6 +25,7 @@ from xli.tools.web_search import WEB_SEARCH_TOOLS
 from pathlib import Path
 from typing import Any
 
+from xli.tools.charts_tool import CHART_TOOL
 from xli.tools.base import Param, Tool, ToolError, ToolResult, tool
 
 MAX_READ_BYTES = 2_000_000
@@ -720,6 +721,9 @@ BUILTIN_TOOLS: list[Tool] = [
     mcp_call,
     mcp_list,
     *WEB_SEARCH_TOOLS,
+    # Charts are how the agent shows numbers: they live here rather than in the
+    # UI because the agent has to be able to ask for one mid-task.
+    CHART_TOOL,
     # Things the shell does badly: structured edits, symbol outlines, JSON
     # queries and the import graph. See xli/tools/structured.py.
     *STRUCTURED_TOOLS,

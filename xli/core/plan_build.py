@@ -59,6 +59,9 @@ BUILD_TOOLS: list[str] = [
     # Sub-agents run with their own toolset and report back a summary; they are
     # how a long build gets parallelised, so the builder needs the tool.
     "delegate",
+    # Charts: the builder shows numbers it collected (pass rate, timings,
+    # sizes) instead of listing them in prose.
+    "chart",
 ]
 
 

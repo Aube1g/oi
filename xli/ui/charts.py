@@ -22,6 +22,7 @@ The vocabulary:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 
 #: Eight steps of vertical resolution, from empty to full block.
@@ -244,21 +245,233 @@ def timeline(
 
 
 def _human(value: float) -> str:
-    if value >= 1_000_000:
-        return f"{value / 1_000_000:.1f}M"
-    if value >= 1_000:
-        return f"{value / 1_000:.1f}k"
-    if value == int(value):
-        return str(int(value))
-    return f"{value:.2f}"
+    """A number the way the interface says it: `2,3 млн`, never `2.3M`.
+
+    Localised through `xli.ui.locale`, because the charts are part of the
+    interface and the project's rule is that they read like Russian.
+    """
+    try:
+        from xli.ui.locale import number_word
+
+        return number_word(value)
+    except Exception:  # noqa: BLE001 - a chart must render without the locale
+        if value == int(value):
+            return str(int(value))
+        return f"{value:.2f}"
+
+
+def heatmap(
+    matrix: Sequence[Sequence[float]],
+    *,
+    row_labels: Sequence[str] = (),
+    col_labels: Sequence[str] = (),
+    cells: str = " ░▒▓█",
+) -> list[str]:
+    """A grid of intensities — good for activity over time or per module.
+
+    Cells are chosen from a ramp rather than coloured, so the shape survives a
+    plain-text log; the caller may still tint the whole block.
+    """
+    rows = [[float(value) for value in row] for row in matrix]
+    if not rows:
+        return []
+    flat = [value for row in rows for value in row] or [0.0]
+    low, high = min(flat), max(flat)
+    span = (high - low) or 1.0
+    label_width = max((len(str(label)) for label in row_labels), default=0)
+    out: list[str] = []
+    if col_labels:
+        pad = " " * label_width
+        out.append(pad + "  " + " ".join(str(label)[:1] for label in col_labels))
+    for index, row in enumerate(rows):
+        label = str(row_labels[index]) if index < len(row_labels) else ""
+        line = "".join(
+            cells[min(len(cells) - 1, max(0, int((value - low) / span * (len(cells) - 1) + 0.5)))]
+            for value in row
+        )
+        out.append(f"{label.ljust(label_width)}  {line}" if label_width else line)
+    return out
+
+
+def stacked(
+    items: Iterable[tuple[str, Sequence[float]]],
+    *,
+    width: int = 40,
+    label_width: int | None = None,
+    marks: str = "█▓▒░",
+) -> list[str]:
+    """One bar per row, split into segments — a breakdown, not a total."""
+    rows = [(str(label), [max(0.0, float(value)) for value in values]) for label, values in items]
+    if not rows:
+        return []
+    if label_width is None:
+        label_width = max(len(label) for label, _ in rows)
+    peaks = [sum(values) for _, values in rows]
+    peak = max(peaks) or 1.0
+    out: list[str] = []
+    for label, values in rows:
+        total = sum(values)
+        cells = max(1, round(total / peak * width)) if total else 0
+        allocation = [
+            int(round(value / total * cells)) if total else 0 for value in values
+        ]
+        # Give the rounding remainder to the largest segment, so the bar is
+        # always exactly `cells` wide — a ragged bar looks like a bug.
+        if allocation and cells:
+            allocation[allocation.index(max(allocation))] += cells - sum(allocation)
+        bar = ""
+        for index, count in enumerate(allocation):
+            bar += marks[index % len(marks)] * max(0, count)
+        out.append(f"{label.ljust(label_width)}  {bar} {_human(total)}")
+    return out
+
+
+def treemap(
+    entries: Iterable[tuple[str, float]],
+    *,
+    width: int = 60,
+    height: int = 12,
+) -> list[str]:
+    """Squarified treemap: area proportional to value, labels where they fit.
+
+    Sizes are the one thing a bar chart cannot show, because a bar chart is
+    about magnitude and a treemap is about magnitude *and* share.
+    """
+    rows = sorted(
+        ((str(name), max(0.0, float(value))) for name, value in entries),
+        key=lambda item: -item[1],
+    )
+    rows = [(name, value) for name, value in rows if value > 0]
+    if not rows or width < 8 or height < 3:
+        return []
+
+    grid = [[" "] * width for _ in range(height)]
+    labels: list[tuple[int, int, str, str]] = []
+    #: Distinct fills rather than one: without colour, a treemap drawn in a
+    #: single shade is an undifferentiated rectangle with words in it.
+    fills = "▓▒░█▚▞◧◨"
+    block = [0]
+
+    def layout(items: list[tuple[str, float]], x: int, y: int, w: int, h: int) -> None:
+        if not items or w <= 1 or h <= 1:
+            return
+        if len(items) == 1:
+            name, value = items[0]
+            fill = fills[block[0] % len(fills)]
+            block[0] += 1
+            for row in range(y, y + h):
+                for col in range(x, x + w):
+                    grid[row][col] = fill
+            labels.append((x + 1, y + h // 2, name[: max(1, w - 2)], fill))
+            return
+
+        half = 0.0
+        split = 0
+        subtotal = sum(value for _, value in items)
+        for index, (_, value) in enumerate(items):
+            half += value
+            split = index + 1
+            if half >= subtotal / 2:
+                break
+        first, rest = items[:split], items[split:]
+        fraction = sum(value for _, value in first) / subtotal
+
+        if w >= h:
+            cut = max(2, min(w - 2, int(round(w * fraction))))
+            layout(first, x, y, cut, h)
+            layout(rest, x + cut, y, w - cut, h)
+        else:
+            cut = max(2, min(h - 2, int(round(h * fraction))))
+            layout(first, x, y, w, cut)
+            layout(rest, x, y + cut, w, h - cut)
+
+    layout(rows, 0, 0, width, height)
+
+    for x, y, text, fill in labels:
+        for index, char in enumerate(text):
+            if 0 <= y < height and 0 <= x + index < width and grid[y][x + index] == fill:
+                grid[y][x + index] = char
+    out = ["".join(row) for row in grid]
+    out.append("  ".join(f"{name}: {_human(value)}" for name, value in rows[:6]))
+    return out
+
+
+def gauge(fraction: float, *, width: int = 30, label: str = "") -> str:
+    """A single-ratio bar: quota used, budget spent, progress made."""
+    ratio = max(0.0, min(1.0, float(fraction)))
+    filled = int(round(ratio * width))
+    bar = "█" * filled + "░" * (width - filled)
+    percent = f"{ratio * 100:.0f}%"
+    return f"{label + ' ' if label else ''}{bar} {percent}"
+
+
+def table(
+    rows: Sequence[Sequence[object]],
+    *,
+    headers: Sequence[str] = (),
+    align: str = "left",
+    separator: str = "  ",
+) -> list[str]:
+    """An aligned table — the least glamorous and most-read chart there is."""
+    body = [[str(cell) for cell in row] for row in rows]
+    if not body and not headers:
+        return []
+    columns = max([len(row) for row in body] + ([len(headers)] if headers else [0]))
+    widths = [0] * columns
+    for row in ([list(headers)] if headers else []) + body:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    def render(row: Sequence[str]) -> str:
+        cells = []
+        for index in range(columns):
+            cell = row[index] if index < len(row) else ""
+            if align == "right" and index:
+                cells.append(cell.rjust(widths[index]))
+            elif align == "center" and index:
+                cells.append(cell.center(widths[index]))
+            else:
+                cells.append(cell.ljust(widths[index]))
+        return separator.join(cells).rstrip()
+
+    out = []
+    if headers:
+        out.append(render(list(headers)))
+        out.append(separator.join("─" * width for width in widths))
+    out.extend(render(row) for row in body)
+    return out
+
+
+def _spark_series(series: Sequence[Sequence[float]]) -> str:
+    """Unused placeholder kept out of __all__: multi-series sparklines are a
+    legibility problem, not a feature."""
+    return ""
+
+
+def normalise_series(data: Sequence[float], *, height: int = 8) -> list[list[float]]:
+    """Scale values into `height` rows for the braille grid."""
+    if not data:
+        return []
+    low, high = min(data), max(data)
+    span = (high - low) or 1.0
+    return [[(value - low) / span * (height - 1)] for value in data]
+
+
+def _round_sig(value: float) -> float:
+    return float(f"{value:.3g}") if math.isfinite(value) else 0.0
 
 
 __all__ = [
     "BLOCKS",
     "bars",
     "braille_plot",
+    "gauge",
+    "heatmap",
     "histogram",
     "sparkline",
+    "stacked",
+    "table",
     "timeline",
+    "treemap",
     "tree",
 ]
