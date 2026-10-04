@@ -145,6 +145,19 @@ httpx python-dotenv pytest-asyncio pyyaml`, затем `--provider fake`.
 * Проверять на настоящем терминале: `tests/test_tui_screen.py` (pty + pyte) и
   `python3 scripts/tui_probe.py --cols 96 --rows 24 -- ...`.
 
+## Плагин Neovim
+
+Плагин — чистый Lua, но его можно и нужно тестировать: `tests/test_nvim_lua.py`
+поднимает настоящий Lua через `lupa` и подсовывает ему `tests/fixtures/fake_vim.lua`
+(буферы, окна, подсветки, команды), а `tests/fixtures/fake_rpc.lua` играет ядро —
+событие за событием. Инструкция кода — `pip install -e '.[dev]'`; без `lupa`
+модуль пропускается.
+
+Если трогаете имена событий, помните: ядро шлёт `agent.agent` с `phase = "start" |
+"end"`, а не `agent.end`. Полный список — то, что умеет `xli/ui/report.py` и
+`xli/agent.py`; тест `test_the_plugin_listens_for_every_event_the_kernel_sends`
+падает, если плагин отстал.
+
 ## Коммиты
 
 Один коммит — одна мысль; сообщение объясняет, **что было сломано** и почему

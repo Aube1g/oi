@@ -36,7 +36,9 @@ dependencies = [
 [project.optional-dependencies]
 nvim = ["pynvim>=0.5.0"]
 tui = ["textual>=0.52.0", "rich>=13.0.0"]
-dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "ruff>=0.4.0"]
+# lupa embeds a Lua interpreter; tests/test_nvim_lua.py uses it to run the
+# Neovim plugin against tests/fixtures/fake_vim.lua instead of only grepping it.
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "ruff>=0.4.0", "lupa>=2.0"]
 # Used by the db_client MCP server; its import is guarded and it tells the user
 # what to install, so it stays optional.
 db = ["psycopg2-binary>=2.9.0"]
