@@ -1,0 +1,9 @@
+{
+  "name": "xli",
+  "version": "6.0.0",
+  "description": "XLI — кодовый агент с инструментами: граф зависимостей, графики в терминале, суб-агенты, MCP. Отдаёт свои инструменты этому сеансу как MCP-сервер `xli`.",
+  "author": { "name": "Aubeig" },
+  "homepage": "https://github.com/Aube1g/oi",
+  "commands": "./commands",
+  "mcpServers": "./.mcp.json"
+}

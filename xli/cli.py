@@ -34,6 +34,7 @@ import asyncio
 import json
 import os
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -780,6 +781,24 @@ def cmd_mcp(args: argparse.Namespace) -> int:
     action = getattr(args, "action", "list") or "list"
     target = getattr(args, "server", "") or ""
 
+    if action == "serve":
+        # stdout belongs to the protocol from here on; anything the CLI would
+        # print goes to stderr instead.
+        from xli.mcp.serve import XliMcpServer
+
+        with redirect_stdout(sys.stderr):
+            server = XliMcpServer(
+                with_agent=bool(getattr(args, "with_agent", False)),
+                tools=[name for name in (getattr(args, "tools", "") or "").split(",") if name.strip()],
+                root=Path(getattr(args, "root", "") or "").expanduser() or None,
+            )
+            print(
+                "  xli mcp serve: инструментов "
+                + str(len(server.tool_names())),
+                file=sys.stderr,
+            )
+        return server.serve()
+
     if action == "reload":
         count = registry.reload_external()
         if args.json:
@@ -1259,6 +1278,65 @@ def cmd_nvim(args: argparse.Namespace) -> int:
     result = install_plugin(target=Path(args.target) if args.target else None)
     _emit(result, args.json)
     return EXIT_OK if result.get("ok") else EXIT_FAILED
+
+
+def cmd_claude(args: argparse.Namespace) -> int:
+    """`xli claude install` — XLI inside Claude Code: MCP, команды, плагин."""
+    from xli.claude.install import describe, install
+
+    action = getattr(args, "action", "install") or "install"
+    if action == "show":
+        _emit(describe(), args.json)
+        return EXIT_OK
+
+    report = install(
+        project=Path(args.project) if getattr(args, "project", None) else None,
+        user=bool(getattr(args, "user", False)),
+        plugin_dir=Path(args.plugin_dir) if getattr(args, "plugin_dir", None) else None,
+        force=bool(getattr(args, "force", False)),
+    )
+    if args.json:
+        _emit(report.to_dict(), True)
+    else:
+        scope = "пользователя" if getattr(args, "user", False) else "проекта"
+        print("  " + STYLE.bold(t("harness_claude_title", scope=scope)))
+        for path in report.written:
+            print("    " + STYLE.green("◆") + " " + path)
+        for path in report.unchanged:
+            print("    " + STYLE.dim("◇") + " " + path)
+        for message in report.messages:
+            print("  " + STYLE.dim(message))
+        print("  " + STYLE.dim(t("harness_mcp_hint")))
+    return EXIT_OK if report.ok else EXIT_FAILED
+
+
+def cmd_codex(args: argparse.Namespace) -> int:
+    """`xli codex install` — XLI внутри Codex: MCP-сервер и промпт."""
+    from xli.codex.install import codex_home, install
+
+    action = getattr(args, "action", "install") or "install"
+    if action == "show":
+        home = Path(args.home).expanduser() if getattr(args, "home", None) else codex_home()
+        _emit({"home": str(home), "config": str(home / "config.toml"),
+               "prompt": str(home / "prompts" / "xli.md")}, args.json)
+        return EXIT_OK
+
+    home = Path(args.home).expanduser() if getattr(args, "home", None) else codex_home()
+    report = install(
+        home=home,
+        project=Path(args.project) if getattr(args, "project", None) else None,
+        force=bool(getattr(args, "force", False)),
+    )
+    if args.json:
+        _emit(report.to_dict(), True)
+    else:
+        print("  " + STYLE.bold(t("harness_codex_title", home=str(home))))
+        for path in report.written:
+            print("    " + STYLE.green("◆") + " " + path)
+        for path in report.unchanged:
+            print("    " + STYLE.dim("◇") + " " + path)
+        print("  " + STYLE.dim(t("harness_mcp_hint")))
+    return EXIT_OK if report.ok else EXIT_FAILED
 
 
 def cmd_guides(args: argparse.Namespace) -> int:
@@ -1844,13 +1922,37 @@ def build_parser() -> argparse.ArgumentParser:
     skills.add_argument("--json", action="store_true")
     skills.set_defaults(func=cmd_skills)
 
-    mcp = sub.add_parser("mcp", help="MCP servers: list, tools, test, reload")
+    mcp = sub.add_parser("mcp", help="MCP servers: list, tools, test, reload, serve")
     mcp.add_argument(
-        "action", choices=["list", "tools", "test", "reload"], nargs="?", default="list"
+        "action", choices=["list", "tools", "test", "reload", "serve"], nargs="?", default="list"
     )
     mcp.add_argument("server", nargs="?", default="", help="имя сервера для tools/test")
     mcp.add_argument("--json", action="store_true")
+    # `mcp serve` — XLI's own tools, offered to other agents over stdio.
+    mcp.add_argument("--with-agent", action="store_true",
+                     help="в serve: отдать наружу и сам цикл агента (инструмент xli_agent)")
+    mcp.add_argument("--tools", default="",
+                     help="в serve: список инструментов через запятую (по умолчанию все)")
+    mcp.add_argument("--root", default="", help="в serve: корень проекта (по умолчанию cwd)")
     mcp.set_defaults(func=cmd_mcp)
+
+    # --- claude / codex
+    claude = sub.add_parser("claude", help="Claude Code: MCP-сервер, команды, плагин")
+    claude.add_argument("action", choices=["install", "show"], nargs="?", default="install")
+    claude.add_argument("--project", help="каталог проекта (по умолчанию текущий)")
+    claude.add_argument("--user", action="store_true", help="настроить ~/.claude, а не проект")
+    claude.add_argument("--plugin-dir", help="куда положить плагин (commands + .mcp.json)")
+    claude.add_argument("--force", action="store_true", help="перезаписать уже настроенное")
+    claude.add_argument("--json", action="store_true")
+    claude.set_defaults(func=cmd_claude)
+
+    codex = sub.add_parser("codex", help="Codex: MCP-сервер и промпт")
+    codex.add_argument("action", choices=["install", "show"], nargs="?", default="install")
+    codex.add_argument("--home", help="каталог Codex (по умолчанию ~/.codex)")
+    codex.add_argument("--project", help="проект, в AGENTS.md которого добавить раздел")
+    codex.add_argument("--force", action="store_true", help="перезаписать уже настроенное")
+    codex.add_argument("--json", action="store_true")
+    codex.set_defaults(func=cmd_codex)
 
     # --- nvim
     nvim = sub.add_parser("nvim", help="install the Neovim plugin")

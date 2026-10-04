@@ -71,6 +71,11 @@ exclude = ["tests*"]
 "xli.skills" = ["*.md", "**/*.md", "**/*.html", "**/*.js", "**/*.cjs", "**/*.sh"]
 "xli.guides" = ["*.md"]
 "xli.nvim" = ["plugin_root/lua/xli/*.lua", "plugin_root/plugin/*.lua"]
+# The Claude Code plugin travels with the wheel too: `xli claude install
+# --plugin-dir` must work from an installed package, not only a checkout.
+"xli.claude" = ["plugin_root/.mcp.json", "plugin_root/.claude-plugin/*.json",
+                "plugin_root/commands/*.md", "plugin_root/skills/*/SKILL.md",
+                "plugin_root/README.md"]
 
 [tool.black]
 line-length = 100

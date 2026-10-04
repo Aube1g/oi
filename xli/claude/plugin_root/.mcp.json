@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "xli": {
+      "command": "xli",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
