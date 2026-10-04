@@ -70,6 +70,9 @@ exclude = ["tests*"]
 [tool.setuptools.package-data]
 "xli.skills" = ["*.md", "**/*.md", "**/*.html", "**/*.js", "**/*.cjs", "**/*.sh"]
 "xli.guides" = ["*.md"]
+# The web frontend is three files with no build step; they ship with the wheel
+# so `xli web` works from an installed package.
+"xli.web" = ["*.html", "*.css", "*.js"]
 "xli.nvim" = ["plugin_root/lua/xli/*.lua", "plugin_root/plugin/*.lua"]
 # The Claude Code plugin travels with the wheel too: `xli claude install
 # --plugin-dir` must work from an installed package, not only a checkout.

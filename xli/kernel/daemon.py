@@ -153,26 +153,19 @@ async def serve_http(
     port: int = 8765,
     *,
     stop_event: asyncio.Event | None = None,
+    web_root: Path | None = None,
 ) -> None:
-    """Serve the kernel over HTTP/SSE (pure asyncio, zero dependencies)."""
-    from xli.kernel.http_transport import HttpTransport
+    """Serve the kernel over HTTP/SSE (pure asyncio, zero dependencies).
 
-    transport = HttpTransport(server)
-    srv = await asyncio.start_server(transport.handle, host, port)
-    print(f"[xli] HTTP server listening on http://{host}:{port}", file=sys.stderr)
+    With `web_root` set, the same port also serves the web frontend — the
+    kernel and the page that talks to it come from one process, which is why
+    the browser never has to know where the protocol lives.
+    """
+    from xli.kernel.http_transport import serve_http_with_web
 
-    stop = stop_event or asyncio.Event()
-    serve_task = asyncio.create_task(srv.serve_forever(), name="xli-kernel-http")
-    try:
-        await stop.wait()
-    finally:
-        serve_task.cancel()
-        try:
-            await serve_task
-        except asyncio.CancelledError:
-            pass
-        srv.close()
-        await srv.wait_closed()
+    await serve_http_with_web(
+        server, host, port, web_root=web_root, stop_event=stop_event, announce=True
+    )
 
 
 async def unix_client(path: Path):

@@ -67,7 +67,10 @@ xli run "прочитай README.md и сделай резюме"
 | `xli session` | `list` · `show` · `delete` |
 | `xli plugins` | `list` · `enable` · `disable` · `reload` · `state` · `dispatch` |
 | `xli skills` | `list` · `search <слова>` — 290+ скиллов с полнотекстовым поиском |
-| `xli mcp` | `list` · `tools` · `test <имя>` · `reload` — MCP-серверы |
+| `xli mcp` | `list` · `tools` · `test <имя>` · `reload` · `serve` — MCP |
+| `xli web` | веб-интерфейс: ядро и страница на одном порту |
+| `xli claude` | `install` · `show` — XLI внутри Claude Code |
+| `xli codex` | `install` · `show` — XLI внутри Codex |
 | `xli graph` | граф зависимостей текстом: `xli graph xli/ui/markdown.py`, `--reverse`, `--impact`, `--depth`, `--json` |
 | `xli nvim` | установить плагин Neovim |
 | `xli guides` | встроенные гайды: `list` · `read <имя>` |
@@ -227,6 +230,27 @@ xli guides read tui     # читать (рендерится как markdown)
 
 ---
 
+## Веб-интерфейс
+
+```bash
+xli web --port 8765          # http://127.0.0.1:8765
+xli web --host 0.0.0.0       # если смотреть с другой машины
+xli web --provider fake      # посмотреть интерфейс без ключей и сети
+```
+
+Одна команда поднимает ядро и страницу на одном порту: она общается с ядром тем
+же JSON-RPC, что CLI, TUI и Neovim. Поток событий приходит через SSE, поэтому
+вызовы инструментов, размышления и ответ появляются по мере работы, а не в
+конце. Интерфейс — фиолетовый, на русском, без эмодзи: подсказки задач,
+транскрипт с раскрывающимися вызовами, панель состояния (шаг, инструменты,
+ошибки, время), список инструментов, тёмная и светлая темы, анимации — и
+`prefers-reduced-motion`, если анимации не нужны.
+
+Графики инструмента `chart` приходят в браузер тем же текстом, что и в
+терминал: рисунок можно скопировать, и он не зависит от картинок.
+
+---
+
 ## MCP
 
 XLI — и клиент, и сервер MCP, и говорит на обоих форматах конфига: `.mcp.json`
@@ -244,6 +268,25 @@ xli mcp reload              # перечитать конфиги без пер�
 Встроенные работают на стандартной библиотеке, поэтому не требуют ни установки,
 ни сети: `xli mcp list` показывает их сразу после `pip install`. Внешние
 подключаются одной строкой в `.mcp.json` и запускаются сами.
+
+Обратная сторона: `xli mcp serve` — сам XLI как MCP-сервер. Свои 23 инструмента
+он отдаёт по stdio любому клиенту, который умеет MCP: граф зависимостей, карта
+репозитория, графики, `bash`, правка файлов, суб-агенты. `--with-agent` добавляет
+инструмент `xli_agent`, который выполняет задачу целиком.
+
+```bash
+xli mcp serve                        # инструменты XLI для чужого агента
+xli mcp serve --with-agent           # плюс сам агент как инструмент
+xli claude install --plugin-dir ~/.claude/plugins/xli
+xli codex install
+```
+
+`xli claude install` дописывает `.mcp.json` (сервер `xli`), кладёт слэш-команды
+`/xli`, `/xli-graph`, `/xli-tools` и раздел в `CLAUDE.md`; `xli codex install` —
+секцию `[mcp_servers.xli]` в `~/.codex/config.toml` и промпт
+`~/.codex/prompts/xli.md`. Оба только добавляют: чужие серверы, комментарии и
+пользовательские настройки остаются на месте, повторный запуск ничего не меняет,
+`--force` заменяет только запись XLI.
 
 ---
 ## Neovim
@@ -266,6 +309,8 @@ xli nvim install
 | `:Xli <задача>` | задача в плавающем окне |
 | `:XliSelection` | отправить визуальное выделение |
 | `:XliDiagnostics` | отправить диагностику этой строки |
+| `:XliAgain` | повторить прошлую задачу |
+| `:XliGraph` | граф зависимостей проекта в окне |
 | `:XliAgain` | повторить прошлую задачу |
 | `:XliGraph [модуль]` | граф зависимостей проекта прямо в окне |
 | `:XliTools` | каталог инструментов агента |
@@ -318,14 +363,27 @@ Newline-delimited JSON-RPC 2.0. Один объект на строку, UTF-8.
 
 Начните с `hello` — ядро скажет, совпадает ли версия протокола. `xli kernel info`
 перечисляет все методы (`agent.*`, `tools.*`, `config.*`, `kernel.*`,
-`session.*`, `plugins.*`, `doctor`).
+`session.*`, `plugins.*`, `mcp.*`, `doctor`).
+
+Те же кадры ходят и по HTTP, когда ядро поднято как `xli serve --http host:порт`
+(или `xli web`):
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"kernel.ping"}' localhost:8765/rpc
+curl -sN localhost:8765/events      # поток уведомлений (SSE)
+curl -s  localhost:8765/health      # что запущено
+```
+
+Поэтому фронтенд можно написать на чём угодно: веб-версия — это ровно такой
+клиент, и в ней нет ни строки особой логики агента.
 
 ---
 
 ## Разработка
 
 ```bash
-env -u XLI_CONFIG_DIR pytest -q     # 1500+ тестов
+env -u XLI_CONFIG_DIR pytest -q     # 1600+ тестов
 ruff check xli tests
 ```
 
@@ -345,10 +403,14 @@ xli/permissions/ движок политики
 xli/parse/      вывод модели -> вызовы инструментов, с починкой
 xli/session/    приращиваемая история диалогов
 xli/agents/     суб-агенты: роли, запуск, свод
-xli/mcp/        клиент, транспорты, 22 встроенных сервера
+xli/mcp/        клиент, транспорты, 22 сервера, свой MCP-сервер (serve)
 xli/manager/    конфиг и сборка Cython (с видом компиляции)
 xli/accel.py    импорт-хук собранного ядра
 xli/tui/        полноэкранный интерфейс
+xli/web/        веб-интерфейс (три файла, без сборки)
+xli/claude/     плагин для Claude Code (команды, скилл, .mcp.json)
+xli/codex/      интеграция с Codex (config.toml, промпт)
+xli/harness/    общее для интеграций: слияние конфигов, отчёты
 xli/ui/         общий словарь UI: локаль, сводки, markdown, ANSI, графики, графы
 xli/guides/     встроенные гайды (xli guides)
 xli/xpi/        внутренняя система плагинов (in-process, хуки жизненного цикла)

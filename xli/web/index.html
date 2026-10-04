@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XLI — кодовый агент</title>
+<meta name="description" content="XLI: агент, который читает, правит и запускает код. Графы зависимостей и графики — текстом, прямо здесь.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26' fill='%23a679ff'>◆</text></svg>">
+</head>
+<body>
+
+<div class="aura" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="mark">◆</span>
+    <span class="wordmark" data-text="XLI">XLI</span>
+    <span class="tagline" id="tagline">кодовый агент</span>
+  </div>
+  <div class="pills">
+    <span class="pill" id="pill-kernel" title="связь с ядром"><i class="dot"></i><span id="pill-kernel-text">связываюсь…</span></span>
+    <span class="pill" id="pill-tools" title="инструменты агента"><span id="pill-tools-text">— инструментов</span></span>
+    <span class="pill" id="pill-mcp" title="MCP-серверы"><span id="pill-mcp-text">— MCP</span></span>
+    <button class="pill ghost" id="theme" title="Сменить тему" aria-label="Сменить тему">◐</button>
+  </div>
+</header>
+
+<main class="stage">
+  <section class="hero" id="hero">
+    <h1>
+      Агент, который <em>работает</em>.<br>
+      Прямо здесь и прямо в терминале.
+    </h1>
+    <p class="lead">
+      XLI читает код, правит файлы, запускает команды, строит граф зависимостей
+      и рисует графики <strong>текстом</strong> — без картинок, чтобы всё это
+      можно было скопировать в отчёт или прочитать по SSH.
+    </p>
+    <div class="chips" id="chips">
+      <button class="chip" data-task="Объясни структуру этого проекта: какие модули главные и что от чего зависит">◆ разобрать проект</button>
+      <button class="chip" data-task="Найди самые большие файлы и покажи их графиком">▁ показать график</button>
+      <button class="chip" data-task="Проверь, есть ли циклы в импортах, и покажи граф зависимостей">⛓ проверить связи</button>
+      <button class="chip" data-task="Найди в коде места, которые могут падать, и предложи правки">✎ найти слабые места</button>
+    </div>
+    <p class="keys">Ctrl+Enter — отправить · ↑ — прошлая задача · Esc — сбросить поле</p>
+  </section>
+
+  <section class="transcript" id="transcript" aria-live="polite"></section>
+
+  <aside class="rail" id="rail">
+    <div class="card">
+      <h2>Состояние</h2>
+      <dl class="stats">
+        <div><dt>шаг</dt><dd id="st-step">—</dd></div>
+        <div><dt>инструменты</dt><dd id="st-tools">0</dd></div>
+        <div><dt>ошибки</dt><dd id="st-errors">0</dd></div>
+        <div><dt>время</dt><dd id="st-time">0,0 с</dd></div>
+      </dl>
+      <div class="activity" id="activity" hidden>
+        <span class="spinner" id="spinner">⣾</span>
+        <span id="activity-text">работаю</span>
+      </div>
+      <div class="meter" title="шаги"><span id="meter"></span></div>
+    </div>
+    <div class="card">
+      <h2>Инструменты</h2>
+      <ul class="tool-list" id="tool-list"></ul>
+    </div>
+    <div class="card">
+      <h2>Что умеет</h2>
+      <ul class="abilities">
+        <li><b>◆ граф зависимостей</b> — что от чего зависит и что сломается</li>
+        <li><b>▁ графики</b> — столбики, линии, тепловые карты, дерево</li>
+        <li><b>◆ суб-агенты</b> — отдельный исполнитель под подзадачу</li>
+        <li><b>⚙ MCP</b> — Notion, кодовые базы и чужие серверы</li>
+      </ul>
+    </div>
+  </aside>
+</main>
+
+<footer class="composer">
+  <div class="composer-inner">
+    <span class="prompt" aria-hidden="true">›</span>
+    <textarea id="input" rows="1" placeholder="Что сделать? Например: почини падающие тесты в ./api"
+              spellcheck="false" autocomplete="off"></textarea>
+    <button id="send" class="send">Отправить<span class="send-hint">Ctrl+Enter</span></button>
+  </div>
+  <div class="statusbar">
+    <span class="seg" id="sb-activity"><i class="dot"></i><span id="sb-activity-text">готов</span></span>
+    <span class="seg">шаги <b id="sb-steps">0/0</b></span>
+    <span class="seg">инструменты <b id="sb-tools">0</b></span>
+    <span class="seg">ошибки <b id="sb-errors">0</b></span>
+    <span class="seg">время <b id="sb-time">0,0 с</b></span>
+    <span class="seg grow"></span>
+    <span class="seg dim" id="sb-kernel">ядро: —</span>
+    <span class="seg dim">поток <b id="sb-events">—</b></span>
+  </div>
+</footer>
+
+<template id="t-user">
+  <article class="msg user">
+    <div class="avatar" aria-hidden="true">▸</div>
+    <div class="body"><div class="who">вы</div><div class="content"></div></div>
+  </article>
+</template>
+
+<template id="t-assistant">
+  <article class="msg assistant">
+    <div class="avatar" aria-hidden="true">◆</div>
+    <div class="body"><div class="who">XLI</div><div class="content"></div></div>
+  </article>
+</template>
+
+<template id="t-tool">
+  <details class="tool" open>
+    <summary>
+      <span class="glyph">◆</span>
+      <span class="tool-name">инструмент</span>
+      <span class="tool-args"></span>
+      <span class="tool-result"></span>
+    </summary>
+    <pre class="tool-body" hidden></pre>
+  </details>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>

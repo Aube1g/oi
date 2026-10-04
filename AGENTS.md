@@ -49,6 +49,11 @@ CLI (xli run / repl)   TUI (xli tui)   Neovim (lua)   веб (web/)
 | `xli/agents/` | суб-агенты: роли, запуск, свод результата |
 | `xli/manager/` | сборка Cython-ядра: `kernel_build.py`, `BuildReport` |
 | `xli/nvim/plugin_root/` | плагин Neovim (Lua, `lua/xli/*.lua`) |
+| `xli/kernel/http_transport.py` | HTTP+SSE: `/rpc`, `/events`, статика |
+| `xli/web/` | веб-интерфейс: `index.html`, `style.css`, `app.js`, без сборки |
+| `xli/claude/` | плагин Claude Code: `.claude-plugin/`, `commands/`, скилл |
+| `xli/codex/` | интеграция Codex: секция в `config.toml`, промпт |
+| `xli/harness/` | слияние чужих конфигов и отчёты об установке |
 | `xli/xpi/` | внутренние плагины XPI |
 | `tests/` | 1500+ тестов; `test_tui_screen.py` гоняет TUI в настоящем pty |
 
@@ -123,6 +128,20 @@ httpx python-dotenv pytest-asyncio pyyaml`, затем `--provider fake`.
 5. Добавить строку в `xli/ui/summary.py::summarise_call`, чтобы вызов читался
    одной фразой, и глиф в `xli/tui/palette.py::TOOL_GLYPH`.
 
+## Как добавить инструмент в свой MCP-сервер
+
+`xli mcp serve` — это XLI как MCP-*сервер* (обратная сторона клиента): он берёт
+реестр инструментов и публикует их схемы как есть. Ничего отдельно описывать не
+нужно — новый инструмент появляется в `tools/list` сам. Если инструмент рисует
+что-то текстом (график, граф), кладите рисунок в `data["text"]`: сервер отдаёт
+именно его, а не JSON.
+
+Интеграции (`xli claude`, `xli codex`) только пишут файлы и всегда **дописывают**:
+чужой `.mcp.json` с пятью серверами или `config.toml` с комментариями должны
+пережить установку без изменений. Тесты на это — в
+`tests/test_harness_integrations.py`, там же проверка «XLI читает то, что сам
+записал».
+
 ## Как добавить MCP-сервер
 
 * Встроенный: модуль в `xli/mcp/servers/`, в нём `TOOLS`, `handle_request`
@@ -157,6 +176,18 @@ httpx python-dotenv pytest-asyncio pyyaml`, затем `--provider fake`.
 "end"`, а не `agent.end`. Полный список — то, что умеет `xli/ui/report.py` и
 `xli/agent.py`; тест `test_the_plugin_listens_for_every_event_the_kernel_sends`
 падает, если плагин отстал.
+
+## Тесты, которым нужен не только Python
+
+* `tests/test_nvim_lua.py` — запускает Lua-плагин через `lupa` и
+  `tests/fixtures/fake_vim.lua`; без `lupa` модуль пропускается.
+* `tests/test_web_ui.py` — исполняет `app.js` в Node с заглушкой DOM; без
+  `node` пропускается.
+* `tests/test_http_transport.py` — поднимает настоящий сервер на случайном
+  порту и говорит с ним сырым HTTP (keep-alive, SSE, CORS, обход путей).
+
+Это не роскошь: именно эти тесты нашли, что нумерованный список в плагине
+рисовался как «. 1», а плагин ждал событие `agent.end`, которого ядро не шлёт.
 
 ## Коммиты
 

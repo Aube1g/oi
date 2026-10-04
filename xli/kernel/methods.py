@@ -37,11 +37,15 @@ def build_kernel(
     project_root: Path | None = None,
     provider: Any = None,
     policy: Any = None,
+    config: Any = None,
 ) -> KernelServer:
     """Assemble a kernel with the full method set.
 
-    `provider` and `policy` are injectable so tests (and an embedder that
-    already has them) need neither an API key nor a writable config on disk.
+    `provider`, `policy` and `config` are injectable so tests (and an embedder
+    that already has them) need neither an API key nor a writable config on
+    disk. Passing a `config` is also how a frontend applies its own flags:
+    without it the provider was resolved from the global singleton, so
+    `xli web --provider fake` quietly ran the configured provider instead.
     """
     from xli.manager.config import Config
     from xli.permissions.policy import Mode, Policy
@@ -49,7 +53,7 @@ def build_kernel(
 
     server = KernelServer()
     root = Path(project_root) if project_root else Path.cwd()
-    config = Config.load(project_root=root)
+    config = config if config is not None else Config.load(project_root=root)
     if policy is None:
         policy = Policy(mode=Mode.parse(config.permission_mode()), root=root)
     registry = default_registry(policy=policy)
@@ -407,11 +411,16 @@ def build_kernel(
 
 # --------------------------------------------------------------------- helpers
 def _resolve_provider(state: dict[str, Any]) -> Any:
-    """Use the injected provider, or build the configured one on first need."""
+    """Use the injected provider, or build the configured one on first need.
+
+    The config is passed through on purpose: `get_provider()` falls back to the
+    process-wide singleton, which knows nothing about the flags this kernel was
+    started with.
+    """
     if state["provider"] is None:
         from xli.providers.base import get_provider
 
-        state["provider"] = get_provider()
+        state["provider"] = get_provider(state.get("config"))
     return state["provider"]
 
 

@@ -1280,6 +1280,41 @@ def cmd_nvim(args: argparse.Namespace) -> int:
     return EXIT_OK if result.get("ok") else EXIT_FAILED
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    """`xli web` — the kernel и веб-интерфейс на одном порту."""
+    from xli.kernel.daemon import serve_http
+    from xli.kernel.methods import build_kernel
+
+    root = Path(__file__).resolve().parent / "web"
+    if not (root / "index.html").exists():
+        print("  " + t("web_missing", path=str(root)), file=sys.stderr)
+        return EXIT_FAILED
+
+    # Apply --provider/--model/--mode the same way `xli run` does. The config
+    # goes into the kernel, not just into a local variable: the kernel used to
+    # resolve its provider from the global singleton, so these flags were
+    # accepted and ignored.
+    config = _load_config(args)
+    policy = _build_policy(config, args)
+
+    host = args.host
+    port = int(args.port)
+    print("  " + STYLE.bold(t("web_title", url=f"http://{host}:{port}")))
+    print("  " + STYLE.dim(t("web_hint")))
+    if args.open:
+        import threading
+        import webbrowser
+
+        threading.Timer(0.8, lambda: webbrowser.open(f"http://{host}:{port}")).start()
+
+    kernel = build_kernel(config=config, policy=policy)
+    try:
+        asyncio.run(serve_http(kernel, host, port, web_root=root))
+    except KeyboardInterrupt:
+        pass
+    return EXIT_OK
+
+
 def cmd_claude(args: argparse.Namespace) -> int:
     """`xli claude install` — XLI inside Claude Code: MCP, команды, плагин."""
     from xli.claude.install import describe, install
@@ -1935,6 +1970,19 @@ def build_parser() -> argparse.ArgumentParser:
                      help="в serve: список инструментов через запятую (по умолчанию все)")
     mcp.add_argument("--root", default="", help="в serve: корень проекта (по умолчанию cwd)")
     mcp.set_defaults(func=cmd_mcp)
+
+    # --- web
+    web = sub.add_parser("web", help="веб-интерфейс: ядро и страница на одном порту")
+    web.add_argument("--host", default="127.0.0.1", help="адрес (0.0.0.0 — для другой машины)")
+    web.add_argument("--port", type=int, default=8765, help="порт (по умолчанию 8765)")
+    web.add_argument("--open", action="store_true", help="открыть браузер")
+    # Same flags as `xli run`/`xli tui`, so `--provider fake` gives a page that
+    # works with no keys at all — the way to look at the interface first.
+    web.add_argument("--provider", help="провайдер (fake — без сети и ключей)")
+    web.add_argument("--model", help="модель провайдера")
+    web.add_argument("--mode", choices=["auto", "confirm", "readonly"], help="режим прав")
+    web.add_argument("--project", help="каталог проекта")
+    web.set_defaults(func=cmd_web)
 
     # --- claude / codex
     claude = sub.add_parser("claude", help="Claude Code: MCP-сервер, команды, плагин")
