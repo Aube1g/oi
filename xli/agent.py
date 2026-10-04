@@ -374,6 +374,19 @@ class Agent:
                     messages.append({"role": "user", "content": detail})
                     continue
 
+                if parse_failures >= MAX_PARSE_RECOVERIES:
+                    # It was asked, more than once, to write a callable call and
+                    # did not. Say that in the log instead of pretending the
+                    # half-call was an answer; the text still reaches the user,
+                    # because it is all the model actually said.
+                    self.emit(
+                        "repair",
+                        detail=(
+                            f"the model produced an unparseable tool call "
+                            f"{parse_failures} times in a row; showing its text as-is"
+                        ),
+                    )
+
                 # The model talked but asked for nothing, and did not say done.
                 # Treat that as completion rather than looping until the budget
                 # burns out — it has nothing left to do.
@@ -456,10 +469,34 @@ class Agent:
             return True
         if "<tool" in raw or "tool_calls" in raw or "function_call" in raw:
             return True
+        # A bare JSON object shaped like a call — with a name and an argument
+        # object — but naming something unregistered is still an attempt. The
+        # parser correctly refuses to execute it; the agent's job is to say so
+        # and give the model the list of names it may use.
+        from xli.parse import _CALL_KEYS, json_spans, loads_lenient
+
+        for start, end in json_spans(raw):
+            try:
+                value, _repairs = loads_lenient(raw[start:end])
+            except Exception:  # noqa: BLE001 - unparsable prose is prose
+                continue
+            if not isinstance(value, dict):
+                continue
+            has_args = any(isinstance(value.get(key), dict) for key in ("args", "arguments", "params"))
+            if has_args and any(key in value for key in ("name", "tool", "action")):
+                return True
+            if value and set(value) <= _CALL_KEYS and any(
+                key in value for key in ("name", "tool", "action")
+            ):
+                return True
+
         known = self.known_tools
         if not known:
             return False
-        for match in re.finditer(r"\b([a-z_][a-z0-9_]{2,40})\s*\(", raw):
+        # `read(path="x.py")`, not a prose mention of `read(x)`: the call
+        # signal is a name followed by parentheses that contain something
+        # value-shaped.
+        for match in re.finditer(r"\b([a-z_][a-z0-9_]{2,40})\s*\([^)]*[=\"'{]", raw):
             name = match.group(1)
             if name in known or self.registry.resolve(name) in known:
                 return True

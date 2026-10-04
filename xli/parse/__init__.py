@@ -315,7 +315,12 @@ _INLINE_CALL = re.compile(
     re.IGNORECASE,
 )
 #: `<tool name="read" path="x.py"/>`
-_SELF_CLOSING = re.compile(r"<" + _TAG + r"\s+(?P<attrs>[^<>]*?)/?>", re.DOTALL)
+_SELF_CLOSING = re.compile(r"<" + _TAG + r"\s+(?P<attrs>[^<>]*?)/\s*>", re.DOTALL)
+#: `<tool name="read" path="x.py">` — attributes on the opening tag. The span
+#: extractor only knows the bare `<tool>`, so these tags are folded into the
+#: bare form with their attributes pushed inside the block, where the same
+#: reader that handles XML-style calls picks them up.
+_OPEN_ATTRS = re.compile(r"<" + _TAG + r"\s+(?P<attrs>[^<>]*?)>", re.DOTALL)
 _ATTR = re.compile(r"""([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+)""")
 #: `name: read` / `path: x.py` inside a <tool> block that is not JSON.
 _YAML_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$", re.MULTILINE)
@@ -325,7 +330,11 @@ def _coerce_scalar(text: str) -> Any:
     """`"x.py"` -> x.py, `20` -> 20, `true` -> True, `x` -> "x"."""
     value = text.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in QUOTES:
-        return value[1:-1]
+        inner = value[1:-1]
+        try:
+            return json.loads(inner)
+        except json.JSONDecodeError:
+            return inner
     lowered = value.lower()
     if lowered in ("true", "false"):
         return lowered == "true"
@@ -337,6 +346,28 @@ def _coerce_scalar(text: str) -> Any:
         except ValueError:
             continue
     return value
+
+
+def _is_literal(text: str) -> bool:
+    """Is this argument value a literal, or a name from surrounding code?
+
+    `read(path="x.py")` is a call. `read(path=config_file)` is a snippet of
+    Python the model is showing off, and executing it would read a file named
+    "config_file". Only quoted strings, numbers, booleans, None and braced
+    structures count as literals.
+    """
+    value = text.strip()
+    if not value:
+        return False
+    if value[0] in QUOTES or value[0] in "{[(":
+        return True
+    if value.lower() in ("true", "false", "none", "null"):
+        return True
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _terms(inner: str) -> list[str]:
@@ -395,12 +426,20 @@ def _args_from_inline(inner: str) -> dict[str, Any] | None:
         if "=" not in term:
             # A bare positional value: `read("x.py")` — assume the first
             # parameter, which the registry will validate anyway.
-            if not args:
+            if not args and _is_literal(term):
                 args["path"] = _coerce_scalar(term)
+            elif not _is_literal(term):
+                # `read(path)` is Python source, not a call: an argument the
+                # model did not give a value for is not an argument.
+                return None
             continue
         key, _, raw = term.partition("=")
         key = key.strip()
         if not key.isidentifier():
+            return None
+        if not _is_literal(raw):
+            # `read(path=config_file)` — a variable name, so this is a code
+            # sample inside the answer, not a request to read anything.
             return None
         args[key] = _coerce_scalar(raw)
     return args
@@ -534,6 +573,9 @@ def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedR
         return match.group(0)
 
     body = _SELF_CLOSING.sub(_drop_self_closing, body)
+    body = _OPEN_ATTRS.sub(
+        lambda match: _OPEN + match.group("attrs").strip() + " ", body
+    )
 
     spans = extract_tool_payloads(body)
 
