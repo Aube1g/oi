@@ -232,3 +232,34 @@ def tool(
         return tool_obj
 
     return decorator
+
+
+
+#: Names that change state on disk or outside the process. Kept here (not in
+#: the permissions package) because the tool layer needs the same answer when
+#: it decides what may run concurrently, and a second list would drift.
+_SEQUENTIAL_NAMES = frozenset({
+    "write", "edit", "bash", "shell", "apply_patch", "todo", "git",
+})
+
+
+def is_mutating(name: str, registry: Any | None = None) -> bool:
+    """Does calling `name` change something another call could observe?
+
+    `delegate` is deliberately *not* mutating: sub-agents are independent
+    workers, and running several of them at once is the whole point. A tool
+    that declares `mutates=True` wins over the name-based guess, but the
+    registry has to be handed in: importing it from here would close an
+    import cycle (`tools.registry` imports this module), and that cycle is
+    real, not bookkeeping.
+    """
+    base = name.rsplit(".", 1)[-1].lower()
+    if base in _SEQUENTIAL_NAMES:
+        return True
+    if registry is None:
+        return False
+    try:
+        tool = registry.get(registry.resolve(name))
+    except Exception:  # noqa: BLE001 - a registry that cannot answer is not proof of anything
+        return False
+    return bool(tool is not None and getattr(tool.spec, "mutates", False))

@@ -716,6 +716,7 @@ BUILTIN_TOOLS: list[Tool] = [
     git,
     todo,
     think,
+    delegate,
     mcp_call,
     mcp_list,
     *WEB_SEARCH_TOOLS,

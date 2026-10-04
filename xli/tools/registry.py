@@ -171,13 +171,88 @@ class ToolRegistry:
         return "\n".join(lines)
 
     # ------------------------------------------------------------ execution
+    #: Names models reach for that are not this toolset's names. Every model
+    #: family was trained on a different tool vocabulary — `read_file`,
+    #: `run_command`, `str_replace_editor`, `list_directory` — and answering
+    #: "unknown tool" to a request the agent can obviously satisfy wastes a
+    #: turn and teaches the model that the call was wrong rather than its name.
+    ALIASES: dict[str, str] = {
+        "read_file": "read",
+        "open_file": "read",
+        "cat": "read",
+        "view": "read",
+        "write_file": "write",
+        "create_file": "write",
+        "save_file": "write",
+        "edit_file": "edit",
+        "patch_file": "edit",
+        "replace": "edit",
+        "str_replace": "edit",
+        "apply_diff": "apply_patch",
+        "list_directory": "ls",
+        "list_dir": "ls",
+        "list_files": "ls",
+        "ls_dir": "ls",
+        "find_files": "glob",
+        "file_search": "glob",
+        "search_files": "grep",
+        "search": "grep",
+        "ripgrep": "grep",
+        "run_command": "bash",
+        "run_shell": "bash",
+        "shell": "bash",
+        "execute": "bash",
+        "terminal": "bash",
+        "exec": "bash",
+        "websearch": "web_search",
+        "search_web": "web_search",
+        "fetch_url": "fetch_page",
+        "fetch": "fetch_page",
+        "curl": "fetch_page",
+        "todo_write": "todo",
+        "task": "todo",
+        "reason": "think",
+        "plan": "think",
+        "outline_file": "outline",
+        "symbols": "outline",
+        "repo": "repo_map",
+        "map_repo": "repo_map",
+        "imports": "dep_graph",
+        "dependencies": "dep_graph",
+        "subagent": "delegate",
+        "agent": "delegate",
+        "task_agent": "delegate",
+        "call_mcp": "mcp_call",
+        "list_mcp": "mcp_list",
+    }
+
+    def resolve(self, name: str) -> str:
+        """The registered name for `name`, following one alias hop."""
+        name = (name or "").strip()
+        if name in self._entries:
+            return name
+        lowered = name.lower()
+        if lowered in self._entries:
+            return lowered
+        alias = self.ALIASES.get(lowered) or self.ALIASES.get(lowered.replace("-", "_"))
+        if alias and alias in self._entries:
+            return alias
+        # `read_file.py` / `read?` — models decorate names surprisingly often.
+        stripped = lowered.strip("`\"'?.")
+        return self.ALIASES.get(stripped, stripped) if stripped in self._entries else name
+
     async def execute(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
         args = dict(args or {})
 
+        requested = name
+        name = self.resolve(name)
         tool_obj = self.get(name)
         if tool_obj is None:
+            available = ", ".join(self.names())
             return ToolResult.failure(
-                f"unknown tool {name!r}; available: {', '.join(self.names())}", tool=name
+                f"unknown tool {requested!r} — the registered tools are: {available}. "
+                "Call one of those, with the arguments shown in their description.",
+                tool=requested,
             )
 
         entry = self._entries[name]

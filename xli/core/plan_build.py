@@ -56,6 +56,9 @@ BUILD_TOOLS: list[str] = [
     "web_search", "fetch_page", "fetch_pages", "search_status",
     "mcp_call", "mcp_list",
     "apply_patch", "outline", "json_query", "repo_map", "dep_graph",
+    # Sub-agents run with their own toolset and report back a summary; they are
+    # how a long build gets parallelised, so the builder needs the tool.
+    "delegate",
 ]
 
 

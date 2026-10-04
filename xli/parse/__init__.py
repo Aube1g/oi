@@ -205,7 +205,12 @@ def extract_tool_payloads(text: str) -> list[tuple[str, int, int]]:
 #: available to validate names against, an untaged JSON object is accepted as
 #: a call only if its keys stay inside this set — prose that merely *shows*
 #: JSON almost always carries other keys, so this kills the false positives.
-_CALL_KEYS = frozenset({"name", "tool", "args", "arguments", "params"})
+_CALL_KEYS = frozenset({"name", "tool", "action", "args", "arguments", "params"})
+
+#: Wrappers that hold a *list* of calls. OpenAI's own shape nests them under
+#: `tool_calls`; several model families serialise that same object into their
+#: text, and until this existed the whole call was pasted at the user as prose.
+_CALL_LIST_KEYS = ("tool_calls", "calls", "tools")
 
 
 def extract_bare_calls(
@@ -224,10 +229,9 @@ def extract_bare_calls(
     """
     calls: list[ToolCall] = []
     repairs: list[str] = []
-    if "{" not in prose:
-        return calls, prose, repairs
-
     removed: list[tuple[int, int]] = []
+    if "{" not in prose:
+        return extract_inline_calls(prose, known_tools)
     for start, end in json_spans(prose):
         payload = prose[start:end]
         try:
@@ -236,26 +240,274 @@ def extract_bare_calls(
             continue
         if not isinstance(value, dict):
             continue
-        name = value.get("name") or value.get("tool")
-        if not isinstance(name, str) or not name.strip():
-            continue
-        args = value.get("args") or value.get("arguments") or value.get("params") or {}
-        if not isinstance(args, dict):
-            continue
-        if known_tools is not None:
-            if name not in known_tools:
+        # A wrapper object holding several calls is unwrapped here rather
+        # than in a separate pass, so a model that emits both forms in one
+        # reply still gets every call executed.
+        for list_key in _CALL_LIST_KEYS:
+            nested = value.get(list_key)
+            if isinstance(nested, list) and nested:
+                for entry in nested:
+                    call = _call_from_object(entry, known_tools)
+                    if call is not None:
+                        calls.append(call)
+                        repairs.append(f"extracted an untagged tool call ({call.name})")
+                if calls:
+                    removed.append((start, end))
+                break
+        else:
+            call = _call_from_object(value, known_tools)
+            if call is None:
                 continue
-        elif set(value) - _CALL_KEYS:
-            continue
-
-        calls.append(ToolCall(name=name.strip(), args=args, raw=payload))
-        removed.append((start, end))
-        repairs.append(f"extracted an untagged tool call ({name.strip()})")
+            calls.append(call)
+            removed.append((start, end))
+            repairs.append(f"extracted an untagged tool call ({call.name})")
 
     for start, end in reversed(removed):
         prose = prose[:start] + prose[end:]
 
+    inline, prose, inline_repairs = extract_inline_calls(prose, known_tools)
+    calls.extend(inline)
+    repairs.extend(inline_repairs)
+
     return calls, prose.strip(), repairs
+
+
+def _call_from_object(value: Any, known_tools: set[str] | None) -> ToolCall | None:
+    """One dictionary -> one ToolCall, or None if it is not shaped like one."""
+    if not isinstance(value, dict):
+        return None
+    name = value.get("name") or value.get("tool") or value.get("action")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    name = name.strip()
+    args = value.get("args") or value.get("arguments") or value.get("params")
+    nested = isinstance(args, dict)
+    if not nested:
+        # `{"name": "read", "path": "x.py"}` — arguments written inline
+        # alongside the name instead of nested. Common in weak models.
+        args = {key: item for key, item in value.items() if key not in _CALL_KEYS}
+    if known_tools is not None:
+        # The catalogue is what makes inline arguments safe to accept: the
+        # name is a registered tool, so the remaining keys cannot be prose.
+        if name not in known_tools:
+            return None
+    elif set(value) - _CALL_KEYS:
+        # Without a catalogue, extra keys could just as well be prose JSON
+        # that merely mentions a tool name. Only objects that stick to the
+        # call shape are treated as calls.
+        return None
+    else:
+        args = {}
+    return ToolCall(name=name, args=args or {}, raw=json.dumps(value, ensure_ascii=False))
+
+
+# --------------------------------------------------------------- inline forms
+#: `read(path="x.py", limit=20)` — the shape a model falls back to when it
+#: forgets the tool tag. Reading it is the difference between "the agent did
+#: nothing and printed my file name" and a working step.
+#: The two quote characters, and a backslash, written without embedding them
+#: in string literals that already use them.
+QUOTES = (chr(34), chr(39))
+BACKSLASH = chr(92)
+
+_INLINE_CALL = re.compile(
+    r"(?<![\w.])(?P<name>[a-z_][a-z0-9_]{1,40})\s*\(",
+    re.IGNORECASE,
+)
+#: `<tool name="read" path="x.py"/>`
+_SELF_CLOSING = re.compile(r"<" + _TAG + r"\s+(?P<attrs>[^<>]*?)/?>", re.DOTALL)
+_ATTR = re.compile(r"""([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+)""")
+#: `name: read` / `path: x.py` inside a <tool> block that is not JSON.
+_YAML_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _coerce_scalar(text: str) -> Any:
+    """`"x.py"` -> x.py, `20` -> 20, `true` -> True, `x` -> "x"."""
+    value = text.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in QUOTES:
+        return value[1:-1]
+    lowered = value.lower()
+    if lowered in ("true", "false"):
+        return lowered == "true"
+    if lowered in ("null", "none"):
+        return None
+    for caster in (int, float):
+        try:
+            return caster(value)
+        except ValueError:
+            continue
+    return value
+
+
+def _terms(inner: str) -> list[str]:
+    """Split `a=1, b="x, y"` on top-level commas only."""
+    out: list[str] = []
+    depth = 0
+    quoted: str | None = None
+    buffer = ""
+    index = 0
+    while index < len(inner):
+        char = inner[index]
+        if quoted:
+            buffer += char
+            if char == quoted and (index == 0 or inner[index - 1] != BACKSLASH):
+                quoted = None
+        elif char in QUOTES:
+            quoted = char
+            buffer += char
+        elif char in "([{":
+            depth += 1
+            buffer += char
+        elif char in ")]}":
+            depth -= 1
+            if depth < 0:
+                return out + ([buffer] if buffer.strip() else [])
+            buffer += char
+        elif char == "," and depth == 0:
+            if buffer.strip():
+                out.append(buffer)
+            buffer = ""
+        else:
+            buffer += char
+        index += 1
+    if buffer.strip():
+        out.append(buffer)
+    return out
+
+
+def _args_from_inline(inner: str) -> dict[str, Any] | None:
+    """`path="x.py", limit=20` or `{"path": "x.py"}` -> a dict."""
+    inner = inner.strip()
+    if not inner:
+        return {}
+    if inner.startswith("{"):
+        for start, end in json_spans(inner):
+            try:
+                value, _ = loads_lenient(inner[start:end])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                return value
+        return None
+
+    args: dict[str, Any] = {}
+    for term in _terms(inner):
+        if "=" not in term:
+            # A bare positional value: `read("x.py")` — assume the first
+            # parameter, which the registry will validate anyway.
+            if not args:
+                args["path"] = _coerce_scalar(term)
+            continue
+        key, _, raw = term.partition("=")
+        key = key.strip()
+        if not key.isidentifier():
+            return None
+        args[key] = _coerce_scalar(raw)
+    return args
+
+
+def extract_inline_calls(
+    prose: str, known_tools: set[str] | None
+) -> tuple[list[ToolCall], str, list[str]]:
+    """Calls written as `tool(arg=value)`, `<tool name="…"/>` or a YAML block.
+
+    Only accepted when the name is a registered tool (or, without a
+    catalogue, when the shape is unmistakable), because `print(len(x))` in a
+    quoted code sample must never execute anything.
+    """
+    calls: list[ToolCall] = []
+    repairs: list[str] = []
+    if not prose:
+        return calls, prose, repairs
+
+    known = known_tools or set()
+    removed: list[tuple[int, int]] = []
+
+    # 1. <tool name="read" path="x.py"/> and <tool name="read">…</tool> blocks
+    #    that JSON could not read.
+    for match in _SELF_CLOSING.finditer(prose):
+        attrs = dict(
+            (name, _coerce_scalar(raw)) for name, raw in _ATTR.findall(match.group("attrs"))
+        )
+        name = str(attrs.pop("name", "") or attrs.pop("tool", ""))
+        if not name or (known and name not in known):
+            continue
+        calls.append(ToolCall(name=name, args=attrs, raw=match.group(0)))
+        removed.append(match.span())
+        repairs.append(f"read an XML-style call ({name})")
+
+    # 2. `read(path="x.py")` / `read({"path": "x.py"})`.
+    for match in _INLINE_CALL.finditer(prose):
+        name = match.group("name")
+        if known and name not in known:
+            continue
+        if not known and name.startswith("_"):
+            continue
+        open_at = match.end() - 1
+        depth = 0
+        quoted: str | None = None
+        index = open_at
+        close_at = -1
+        while index < len(prose):
+            char = prose[index]
+            if quoted:
+                if char == quoted and prose[index - 1] != BACKSLASH:
+                    quoted = None
+            elif char in QUOTES:
+                quoted = char
+            elif char in "([{":
+                depth += 1
+            elif char in ")]}":
+                depth -= 1
+                if depth == 0:
+                    close_at = index
+                    break
+            index += 1
+        if close_at < 0:
+            continue
+        if any(start <= match.start() < end for start, end in removed):
+            continue
+        args = _args_from_inline(prose[open_at + 1 : close_at])
+        if args is None:
+            continue
+        if not known and not args:
+            continue
+        calls.append(
+            ToolCall(
+                name=name,
+                args=args,
+                raw=prose[match.start() : close_at + 1],
+            )
+        )
+        removed.append((match.start(), close_at + 1))
+        repairs.append(f"read a function-style call ({name})")
+
+    for start, end in reversed(sorted(removed)):
+        prose = prose[:start] + prose[end:]
+
+    return calls, prose.strip(), repairs
+
+
+def _parse_tagged_text(payload: str, known_tools: set[str] | None) -> ToolCall | None:
+    """A `<tool>` block that is not JSON: XML attributes or `key: value` lines."""
+    attrs = dict(
+        (name, _coerce_scalar(raw)) for name, raw in _ATTR.findall(payload)
+    )
+    name = str(attrs.pop("name", "") or attrs.pop("tool", "") or attrs.pop("action", ""))
+    if name and attrs and (known_tools is None or name in known_tools):
+        return ToolCall(name=name, args=attrs, raw=payload)
+
+    fields: dict[str, Any] = {}
+    for key, raw in _YAML_LINE.findall(payload):
+        if key in ("args", "arguments", "params"):
+            continue
+        fields[key] = _coerce_scalar(raw)
+    name = str(fields.pop("name", "") or fields.pop("tool", "") or fields.pop("action", ""))
+    if not name or (known_tools is not None and name not in known_tools):
+        return None
+    if not fields:
+        return None
+    return ToolCall(name=name, args=fields, raw=payload)
 
 
 def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedResponse:
@@ -266,6 +518,23 @@ def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedR
         repairs.append("closed an unterminated code fence")
 
     calls: list[ToolCall] = []
+
+    # `<tool name="read" path="x.py"/>` has no closing tag, so the span
+    # extractor would treat everything after it as one unterminated block.
+    # Collecting these first keeps both readers honest.
+    def _drop_self_closing(match: re.Match) -> str:
+        attrs = dict(
+            (name, _coerce_scalar(raw)) for name, raw in _ATTR.findall(match.group("attrs"))
+        )
+        name = str(attrs.pop("name", "") or attrs.pop("tool", ""))
+        if name and (known_tools is None or name in known_tools):
+            calls.append(ToolCall(name=name, args=attrs, raw=match.group(0)))
+            repairs.append(f"read an XML-style call ({name})")
+            return ""
+        return match.group(0)
+
+    body = _SELF_CLOSING.sub(_drop_self_closing, body)
+
     spans = extract_tool_payloads(body)
 
     for payload, start, _end in spans:
@@ -292,17 +561,29 @@ def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedR
                 break
 
         if parsed is None:
-            repairs.append(f"skipped an unparseable <tool> block at offset {start}")
+            # Not JSON — but "name=..." attributes and `name: read` blocks are
+            # both shapes real models produce inside the tag.
+            call = _parse_tagged_text(payload, known_tools)
+            if call is None:
+                repairs.append(f"skipped an unparseable <tool> block at offset {start}")
+                continue
+            calls.append(call)
+            repairs.append(f"read a non-JSON call ({call.name})")
             continue
 
-        name = parsed.get("name") or parsed.get("tool")
+        name = parsed.get("name") or parsed.get("tool") or parsed.get("action")
         args = parsed.get("args") or parsed.get("arguments") or parsed.get("params") or {}
-        if not isinstance(name, str) or not name:
-            repairs.append("skipped a tool block with no 'name'")
-            continue
         if not isinstance(args, dict):
             repairs.append(f"coerced non-object args for {name}")
             args = {}
+        if not args:
+            inline = {key: item for key, item in parsed.items() if key not in _CALL_KEYS}
+            if inline:
+                args = inline
+                repairs.append(f"read inline arguments for {name}")
+        if not isinstance(name, str) or not name:
+            repairs.append("skipped a tool block with no 'name'")
+            continue
 
         calls.append(ToolCall(name=name, args=args, raw=payload))
 
