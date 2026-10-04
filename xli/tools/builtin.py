@@ -556,20 +556,32 @@ async def delegate(agent_name: str, task: str, max_steps: int = 10) -> ToolResul
     if ctx.depth >= MAX_DELEGATE_DEPTH:
         raise ToolError(f"delegate: max nesting depth {MAX_DELEGATE_DEPTH} reached, refusing to prevent infinite loops")
 
-    # Resolve the agent spec
+    # Resolve the agent spec. `registry.get` returns None for a name it does
+    # not know (it is a dict lookup), so "no such agent" has to be said here —
+    # without this check the user saw `AttributeError: 'NoneType' object has
+    # no attribute 'tools'` from three lines further down.
+    from xli.agents.registry import get_registry as get_agent_registry
+
+    registry = None
     try:
-        from xli.agents.registry import get_registry as get_agent_registry
         registry = get_agent_registry()
         spec = registry.get(agent_name)
-    except Exception as exc:
-        available = []
+    except Exception as exc:  # noqa: BLE001 - a broken registry is reported, not fatal
+        spec = None
+        registry_error = str(exc)
+    else:
+        registry_error = ""
+
+    if spec is None:
+        available: list[str] = []
         try:
-            available = list(registry.list_names())
-        except Exception:
+            # `names()`, not `list_names()` — the latter never existed, so this
+            # hint was silently empty and the error named no agent at all.
+            available = sorted(registry.names()) if registry is not None else []
+        except Exception:  # noqa: BLE001
             pass
-        raise ToolError(
-            f"delegate: unknown agent '{agent_name}'. Available: {available}. Error: {exc}"
-        )
+        hint = f" Known agents: {', '.join(available)}." if available else ""
+        raise ToolError(f"delegate: no sub-agent named '{agent_name}'.{hint}")
 
     # Build a filtered tool registry for the sub-agent
     from xli.tools.registry import ToolRegistry, default_registry
@@ -596,6 +608,7 @@ async def delegate(agent_name: str, task: str, max_steps: int = 10) -> ToolResul
         on_event=ctx.on_event,
         agent_id=sub_id,
         agent_name=agent_name,
+        agent_hint=str(getattr(spec, "colour", "") or ""),
     )
 
     # Set child context so nested delegation works
@@ -613,17 +626,49 @@ async def delegate(agent_name: str, task: str, max_steps: int = 10) -> ToolResul
     finally:
         reset_agent_context(token)
 
-    summary = result.summary or result.text[:500]
+    # What the delegate *said* is the point of delegating, and it has to be in
+    # `data`: the agent loop feeds `result.data` back to the model, while
+    # `summary` is what a human sees in the transcript. Returning only the
+    # bookkeeping here is what made sub-agents look broken — the parent got
+    # "ok=true steps=1", learned nothing, and delegated the same task again
+    # until the step budget ran out.
+    # The child's *reply* is what the parent needs; `<done>краткий итог</done>`
+    # is one line on top of it, and the answer often lives only in the reply
+    # (a model that ends with <done>готово</done> would otherwise hand the
+    # parent the word "готово" and nothing else).
+    answer = (result.text or result.summary or "").strip()
+    if result.summary.strip() and result.summary.strip() not in answer:
+        answer = f"{answer}\n\nИтог: {result.summary.strip()}".strip()
+    if not answer:
+        answer = "(суб-агент ничего не ответил)"
+    if len(answer) > 8000:
+        answer = answer[:7500] + f"\n… ещё {len(answer) - 7500} символов обрезано"
+
+    head = f"[{agent_name}] {answer}"
     return ToolResult.success(
         data={
-            "agent_id": sub_id,
             "agent_name": agent_name,
+            "agent_id": sub_id,
             "ok": result.ok,
+            "stopped_reason": result.stopped_reason,
             "steps": len(result.steps),
             "seconds": round(result.seconds, 2),
+            "text": head,
         },
-        summary=f"[{agent_name}:{sub_id}] ok={result.ok} steps={len(result.steps)} — {summary}",
+        summary=(
+            f"[{agent_name}:{sub_id}] "
+            f"{'ок' if result.ok else 'сбой'} · шагов {len(result.steps)} · "
+            f"{_ru_seconds(result.seconds)} — {answer.splitlines()[0][:200]}"
+        ),
     )
+
+
+def _ru_seconds(seconds: float) -> str:
+    """Seconds with a comma, the way Russian writes numbers."""
+    if seconds >= 60:
+        minutes, rest = divmod(seconds, 60)
+        return f"{int(minutes)} мин {rest:02.0f} с"
+    return f"{seconds:.1f}".replace(".", ",") + " с"
 
 
 # -------------------------------------------------------------- mcp bridge

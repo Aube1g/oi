@@ -126,11 +126,16 @@ class Agent:
         mode: WorkMode | None = None,
         agent_id: str = "main",
         agent_name: str = "xli",
+        agent_hint: str = "",
     ):
         self.provider = provider
         self.role = role
         self.agent_id = agent_id
         self.agent_name = agent_name
+        # The colour this agent asked for, if it is a sub-agent with a spec.
+        # Front ends read it off the event so `reviewer` is the same colour in
+        # every one of them, instead of each hashing the name its own way.
+        self.agent_hint = agent_hint
         self.max_skills_context = max_skills_context
         self._skills: str | None = None
         # XPI plugins observe the loop through hooks. Injected rather than
@@ -167,6 +172,8 @@ class Agent:
         try:
             payload.setdefault("agent_id", self.agent_id)
             payload.setdefault("agent_name", self.agent_name)
+            if self.agent_hint:
+                payload.setdefault("agent_hint", self.agent_hint)
             result = self.on_event(kind, payload)
             if asyncio.iscoroutine(result):
                 asyncio.ensure_future(result)

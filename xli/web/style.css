@@ -267,6 +267,32 @@ button.pill:hover { color: var(--accent-bright); border-color: var(--accent); }
 .content hr { border: none; border-top: 1px solid var(--line); margin: 0.9em 0; }
 .content .task { list-style: none; margin-left: -1.2em; }
 
+/* A sub-agent speaks in its own colour, from the badge down to the rule
+   beside it — the same six colours xli/ui/agents.py gives the terminal. */
+.msg.assistant.delegate .body { border-left: 2px solid currentColor; padding-left: 12px; }
+.msg.assistant.delegate .who-name { font-weight: 600; }
+.msg.assistant.delegate { animation: rise 0.32s ease both, hue 2.4s ease-in-out infinite; }
+@keyframes hue {
+  0%, 100% { filter: none; }
+  50% { filter: brightness(1.06); }
+}
+
+.delegate-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font: 13px/1.6 var(--mono);
+  color: var(--text-dim);
+  padding-left: 4px;
+  animation: rise 0.28s ease both;
+}
+.delegate-row .glyph { animation: beat 1.4s ease-in-out infinite; }
+.delegate-row .label { color: var(--text-faint); }
+.delegate-row .who { font-weight: 600; }
+.delegate-row .what { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.note.agent { color: var(--text-dim); border-left: 2px solid var(--accent-deep); }
+
 /* A chart is text: it keeps its own spacing and never gets wrapped. */
 .content pre.chart, .chart { font: 13px/1.25 var(--mono); white-space: pre; overflow-x: auto; }
 

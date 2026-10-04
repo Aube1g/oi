@@ -23,6 +23,34 @@ const GLYPH = {
 const ARG_KEYS = ["path", "file", "file_path", "target", "query", "pattern",
   "command", "task", "name", "module", "symbol", "url", "kind"];
 
+/* The same six colours xli/ui/agents.py hands the terminal, in the same order,
+ * and the same hash — a sub-agent must be the colour in the browser that it is
+ * in the TUI, or the two front ends teach the user two different mappings. */
+const AGENT_COLORS = ["#9D4EDD", "#7EE7B0", "#FFC46E", "#8CBEFF", "#E0AAFF", "#FF7A95"];
+const AGENT_NAMED = {
+  accent: "#9D4EDD", good: "#7EE7B0", warn: "#FFC46E",
+  bad: "#FF7A95", blue: "#8CBEFF", magenta: "#E0AAFF",
+};
+
+function agentColor(name, hint) {
+  const named = AGENT_NAMED[String(hint || "").trim().toLowerCase()];
+  if (named) return named;
+  const text = String(name || "");
+  if (!text) return "";
+  let digest = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    digest = (digest * 131 + text.charCodeAt(i)) % 100003;   // as in agents.py
+  }
+  return AGENT_COLORS[digest % AGENT_COLORS.length];
+}
+
+function agentOf(params) {
+  const id = String((params && params.agent_id) || "main");
+  const name = String((params && params.agent_name) || "");
+  if (id === "main" || !name) return { id: "main", name: "XLI", colour: "" };
+  return { id, name, colour: agentColor(name, params && params.agent_hint) };
+}
+
 const state = {
   busy: false,
   startedAt: 0,
@@ -35,7 +63,9 @@ const state = {
   lastTask: "",
   toolRow: null,
   assistantRow: null,
+  assistantAgent: "main",
   events: 0,
+  agents: [],
 };
 
 /* ---------------------------------------------------------------- helpers */
@@ -202,17 +232,32 @@ function addUser(text) {
   return node;
 }
 
-function addAssistant() {
+function addAssistant(agent) {
+  const who = agent || { id: "main", name: "XLI", colour: "" };
   const node = $("t-assistant").content.firstElementChild.cloneNode(true);
+  const name = node.querySelector(".who-name");
+  name.textContent = who.name;
+  if (who.colour) {
+    node.querySelector(".avatar").style.color = who.colour;
+    name.style.color = who.colour;
+    node.classList.add("delegate");
+  }
   node.querySelector(".content").innerHTML = "";
   $("transcript").appendChild(node);
   state.assistantRow = node.querySelector(".content");
+  state.assistantAgent = who.id;
   scroll();
   return node;
 }
 
-function appendAssistant(text) {
-  if (!state.assistantRow) addAssistant();
+function appendAssistant(text, params) {
+  const agent = agentOf(params);
+  // A sub-agent speaking must not be welded onto the main agent's sentence:
+  // the whole point of a distinct colour is that the voice changed.
+  if (!state.assistantRow || state.assistantAgent !== agent.id) {
+    state.assistantRow = null;
+    addAssistant(agent);
+  }
   state.assistantRow.innerHTML += renderMarkdown(text);
   scroll();
 }
@@ -243,6 +288,27 @@ function finishTool(payload) {
     body.textContent = `${body.textContent}\n\n${payload.summary}`;
     body.hidden = false;
   }
+}
+
+function addDelegate(name, task, hint) {
+  const colour = agentColor(name, hint);
+  const node = document.createElement("div");
+  node.className = "delegate-row";
+  node.innerHTML = `<span class="glyph" style="color:${colour}">◆</span>`
+    + `<span class="label">делегирую</span>`
+    + `<span class="who" style="color:${colour}">${escapeHtml(name)}</span>`
+    + (task ? `<span class="what">${escapeHtml(task)}</span>` : "");
+  $("transcript").appendChild(node);
+  state.toolRow = null;
+  state.assistantRow = null;
+  scroll();
+  return node;
+}
+
+function escapeHtml(text) {
+  return String(text == null ? "" : text)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function addNote(text, kind) {
@@ -288,6 +354,10 @@ function setStats() {
   $("sb-tools").textContent = String(state.tools);
   $("sb-errors").textContent = String(state.errors);
   $("sb-time").textContent = ru(state.busy ? elapsed() : (state.totalSeconds || 0));
+  const roster = $("st-agents");
+  if (roster) roster.textContent = state.agents.length
+    ? state.agents.map((a) => a.name).join(", ")
+    : "—";
   const ratio = state.maxSteps ? Math.min(1, state.steps / state.maxSteps) : (state.busy ? 0.08 : 0);
   $("meter").style.width = `${Math.round(ratio * 100)}%`;
 }
@@ -364,10 +434,15 @@ function connectEvents() {
 function handleNotification(method, params) {
   switch (method) {
     case "agent.assistant":
-      if (params.text && params.text.trim()) appendAssistant(params.text);
+      if (params.text && params.text.trim()) appendAssistant(params.text, params);
       break;
     case "agent.tool_call":
       state.tools += 1;
+      if (params.name === "delegate") {
+        addDelegate((params.args || {}).agent_name || "?", (params.args || {}).task || "",
+          params.agent_hint);
+        break;
+      }
       addTool(params.name, params.args);
       setActivity(`работаю · ${params.name || ""}`, "busy");
       setStats();
@@ -395,9 +470,24 @@ function handleNotification(method, params) {
       addNote(`  ✗ ${params.message || ""}`, "bad");
       setStats();
       break;
-    case "agent.agent":
-      if (params.phase === "end") setActivity("заканчиваю", "busy");
+    case "agent.agent": {
+      const agent = agentOf(params);
+      if (agent.id === "main") {
+        if (params.phase === "end") setActivity("заканчиваю", "busy");
+        break;
+      }
+      if (params.phase === "start") {
+        if (!state.agents.some((a) => a.id === agent.id)) state.agents.push(agent);
+        addNote(`  ◆ ${agent.name} подключился — ${params.task || ""}`.trim(), "agent");
+      } else {
+        const steps = `${params.steps || 0} ${plural(params.steps || 0, "шаг", "шага", "шагов")}`;
+        const reason = params.stopped_reason === "done" ? "готово" : (params.stopped_reason || "");
+        addNote(`  ◇ ${agent.name} закончил · ${steps} · ${duration(params.seconds || 0)} · ${reason}`,
+          "agent");
+      }
+      setStats();
       break;
+    }
     default:
       break;
   }
@@ -409,6 +499,7 @@ async function send(task) {
   if (!text || state.busy) return;
 
   state.lastTask = text;
+  state.agents = [];
   $("input").value = "";
   autosize();
   addUser(text);
@@ -417,7 +508,7 @@ async function send(task) {
   try {
     const result = await rpc("agent.run", { task: text });
     stopWork();
-    if (result && result.summary) appendAssistant(result.summary);
+    if (result && result.summary) appendAssistant(result.summary, { agent_id: "main" });
     endTurn(result || {});
     setActivity(result && result.ok ? "готов" : "ошибка", result && result.ok ? "ok" : "bad");
   } catch (error) {

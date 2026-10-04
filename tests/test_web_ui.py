@@ -111,6 +111,19 @@ class TestJavaScript:
     const vm = require("vm");
 
     const listeners = {};
+    // One stable node per id, so a test can read back what the page wrote —
+    // the roster of sub-agents lives in #st-agents, for instance.
+    const nodes = {};
+    function makeNode(id) {
+      return {
+        id, classList: { add: () => {}, remove: () => {}, contains: () => false },
+        style: {}, dataset: {}, children: [], hidden: false,
+        appendChild(child) { this.children.push(child); return child; },
+        querySelector: () => null, querySelectorAll: () => [],
+        addEventListener: () => {}, remove: () => {},
+        textContent: "", innerHTML: "", className: "",
+      };
+    }
     const context = {
       console,
       performance: { now: () => Date.now() },
@@ -129,23 +142,21 @@ class TestJavaScript:
       },
       document: {
         documentElement: { dataset: { theme: "dark" } },
+        body: { scrollHeight: 1200, scrollTop: 0, appendChild: () => {} },
         addEventListener: (name, fn) => { listeners[name] = fn; },
         querySelector: () => null,
         querySelectorAll: () => [],
-        getElementById: () => ({
-          addEventListener: () => {}, classList: { add: () => {}, remove: () => {} },
-          style: {}, querySelector: () => ({ title: "" }), dataset: {},
-          textContent: "", innerHTML: "", appendChild: () => {},
-        }),
-        createElement: () => ({ classList: { add: () => {} }, style: {},
-                                appendChild: () => {}, textContent: "", innerHTML: "" }),
+        getElementById: (id) => (nodes[id] = nodes[id] || makeNode(id)),
+        createElement: (tag) => makeNode(tag),
       },
     };
     context.globalThis = context;
     context.window.document = context.document;
 
     const code = fs.readFileSync(process.argv[2], "utf8") +
-      "\\nglobalThis.__xli = { renderMarkdown, plural, duration, glyph, argSummary, inlineSpans, APP_VERSION_CHECK: 1 };";
+      "\\nglobalThis.__xli = { renderMarkdown, plural, duration, glyph, argSummary,"
+      + " inlineSpans, agentColor, agentOf, addDelegate, handleNotification,"
+      + " APP_VERSION_CHECK: 1 };";
     vm.createContext(context);
     vm.runInContext(code, context);
 
@@ -183,6 +194,34 @@ class TestJavaScript:
     out.args.path = context.__xli.argSummary({ path: "a.py", other: "x" });
     out.args.fallback = context.__xli.argSummary({ query: "поиск" });
     out.args.empty = context.__xli.argSummary({});
+
+    // Sub-agents: a delegate call, a child coming and going, and the roster.
+    out.colours = {
+      reviewer: context.__xli.agentColor("reviewer"),
+      explorer: context.__xli.agentColor("explorer"),
+      debugger: context.__xli.agentColor("debugger"),
+      testwriter: context.__xli.agentColor("test-writer"),
+      documenter: context.__xli.agentColor("documenter"),
+      hinted: context.__xli.agentColor("reviewer", "good"),
+      stable: context.__xli.agentColor("reviewer") === context.__xli.agentColor("reviewer"),
+    };
+    out.agents = {
+      main: context.__xli.agentOf({ agent_id: "main", agent_name: "xli" }),
+      child: context.__xli.agentOf({ agent_id: "reviewer-1a2b", agent_name: "reviewer" }),
+    };
+    const delegate = context.__xli.addDelegate("reviewer", "посмотри парсер");
+    out.delegate_html = delegate.innerHTML;
+    context.__xli.handleNotification("agent.tool_call",
+      { name: "delegate", args: { agent_name: "explorer", task: "найди вход", path: "xli/cli.py" } });
+    context.__xli.handleNotification("agent.agent",
+      { phase: "start", agent_id: "explorer-1", agent_name: "explorer", task: "найди вход" });
+    context.__xli.handleNotification("agent.agent",
+      { phase: "end", agent_id: "explorer-1", agent_name: "explorer", steps: 3,
+        seconds: 1.5, stopped_reason: "done" });
+    out.roster = nodes["st-agents"] ? nodes["st-agents"].textContent : null;
+    out.transcript = (nodes["transcript"] ? nodes["transcript"].children : []).map(
+      (child) => child.className + "|" + String(child.textContent || child.innerHTML || "")
+    );
 
     process.stdout.write(JSON.stringify(out));
     """
@@ -254,3 +293,47 @@ class TestJavaScript:
         assert rendered["args"]["path"] == "a.py"
         assert rendered["args"]["fallback"] == "поиск"
         assert rendered["args"]["empty"] == ""
+
+    # ------------------------------------------------------------ sub-agents
+    def test_every_sub_agent_gets_its_own_colour(self, rendered):
+        colours = rendered["colours"]
+        assert colours["stable"], "цвет суб-агента не должен меняться между запусками"
+        seen = [colours["reviewer"], colours["explorer"], colours["debugger"]]
+        assert len(set(seen)) == 3, f"суб-агенты сливаются в один цвет: {seen}"
+        assert all(re.fullmatch(r"#[0-9A-F]{6}", c) for c in seen)
+
+    def test_the_browser_and_the_terminal_agree_on_the_colour(self, rendered):
+        """One mapping, two front ends: the hash must be the same one."""
+        from xli.ui.agents import agent_color
+
+        for name in ("reviewer", "explorer", "debugger", "test-writer", "documenter"):
+            key = "testwriter" if name == "test-writer" else name
+            assert rendered["colours"][key] == agent_color(name), name
+
+    def test_a_spec_colour_beats_the_hash(self, rendered):
+        """`test-writer` asks for `colour: good`; the hint must win."""
+        from xli.ui.agents import agent_color
+
+        assert rendered["colours"]["hinted"] == agent_color("reviewer", "good")
+
+    def test_the_main_agent_is_not_painted_as_a_delegate(self, rendered):
+        assert rendered["agents"]["main"]["id"] == "main"
+        assert rendered["agents"]["main"]["colour"] == ""
+        child = rendered["agents"]["child"]
+        assert child["id"] == "reviewer-1a2b" and child["name"] == "reviewer"
+        assert child["colour"] == rendered["colours"]["reviewer"]
+
+    def test_a_delegate_call_announces_itself_in_the_target_colour(self, rendered):
+        html = rendered["delegate_html"]
+        assert "делегирую" in html
+        assert "reviewer" in html
+        assert rendered["colours"]["reviewer"] in html, "имя суб-агента не в его цвете"
+
+    def test_the_roster_shows_who_is_working(self, rendered):
+        assert rendered["roster"] == "explorer", "панель состояния не назвала суб-агента"
+
+    def test_a_child_arriving_and_leaving_is_visible(self, rendered):
+        rows = [row for row in rendered["transcript"] if "explorer" in row]
+        assert any("подключился" in row for row in rows), rows
+        assert any("закончил" in row for row in rows), rows
+        assert any("шага" in row and "1,5 с" in row for row in rows), rows
