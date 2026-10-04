@@ -67,6 +67,53 @@ class TestTheCallIsExecutedNotQuoted:
         assert "ls" in calls_of(result)
 
 
+class TestRealModelShapesAreUnderstood:
+    """Shapes that used to reach the user as the answer, verbatim."""
+
+    def test_the_react_shape_becomes_a_real_call(self):
+        """`Action: read` / `Action Input: {...}` — the Mistral fallback."""
+        result, _ = run(
+            [
+                'Посмотрю файл.\nAction: read\nAction Input: {"path": "xli/parse/__init__.py"}',
+                "<done>готово</done>",
+            ]
+        )
+        assert result.stopped_reason == "done"
+        assert "read" in calls_of(result), "вызов из ReAct-формы не выполнился"
+
+    def test_the_invoke_xml_shape_becomes_a_real_call(self):
+        raw = (
+            'Сейчас прочитаю.\n<function_calls>\n'
+            '<invoke name="read"><parameter name="path">README.md</parameter></invoke>\n'
+            "</function_calls>"
+        )
+        result, _ = run([raw, "<done>готово</done>"])
+        assert "read" in calls_of(result)
+
+    def test_a_call_written_as_python_kwargs_runs(self):
+        result, _ = run(['Вызываю read(path="README.md", limit=10).', "<done>готово</done>"])
+        assert "read" in calls_of(result)
+
+    def test_an_alias_named_in_prose_still_runs(self):
+        """`read_file(...)` is an alias, not a registered name."""
+        result, _ = run(['Вызываю read_file(path="README.md").', "<done>готово</done>"])
+        calls = [call.name for step in result.steps for call in step.calls]
+        assert "read_file" in calls
+        assert result.ok
+
+    def test_an_unreadable_block_is_asked_again_not_answered(self):
+        """The block stays visible, and the model is told what to fix."""
+        result, events = run(
+            [
+                "<tool>прочитай README.md пожалуйста</tool>",
+                '<tool>{"name": "read", "args": {"path": "README.md"}}</tool>',
+                "<done>готово</done>",
+            ]
+        )
+        assert "read" in calls_of(result), "второй, правильный вызов не выполнился"
+        assert any(kind == "repair" for kind, _ in events)
+
+
 class TestUnknownNamesAreResolved:
     def test_a_foreign_tool_name_is_aliased_once_the_model_is_told(self):
         """The first reply names a tool this agent does not have.

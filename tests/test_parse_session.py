@@ -123,10 +123,16 @@ class TestParseResponse:
         assert result.done is True
         assert "unterminated" in " ".join(result.repairs)
 
-    def test_unparseable_tool_block_is_skipped_with_note(self):
+    def test_unparseable_tool_block_is_kept_and_reported(self):
+        """A block nobody can read must be reported *and* shown.
+
+        Dropping it silently left the user with an empty answer and the agent
+        with nothing to correct.
+        """
         result = parse_response("<tool>total garbage</tool>")
         assert not result.has_calls
-        assert any("unparseable" in r for r in result.repairs)
+        assert any("could not read" in r for r in result.repairs)
+        assert "total garbage" in result.text, "нераспознанный блок исчез из ответа"
 
     def test_prose_inside_tool_tag_recovered(self):
         result = parse_response('<tool>here you go: {"name":"read","args":{"path":"a"}} cheers</tool>')

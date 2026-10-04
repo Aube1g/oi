@@ -229,13 +229,24 @@ class Agent:
 
     @property
     def known_tools(self) -> set[str]:
-        """Every registered tool name, so the parser can recognise untagged
-        call JSON the model wrote as plain text and execute it instead of
-        showing the user a blob of JSON as if it were an answer."""
+        """Every name the model may legitimately use for a tool.
+
+        Registered names plus the aliases (`read_file`, `run_command`, `task`):
+        a model that writes `read_file(path="x.py")` is making a call, and
+        refusing it because the *alias* is not in the catalogue is how an
+        attempt ends up printed as the answer. The registry resolves aliases
+        when the call is executed.
+        """
+        names: set[str] = set()
         try:
-            return set(self.registry.names(enabled_only=False))
+            names = set(self.registry.names(enabled_only=False))
         except Exception:  # noqa: BLE001 - parsing must work even without a registry
             return set()
+        try:
+            names |= set(self.registry.ALIASES)
+        except Exception:  # noqa: BLE001
+            pass
+        return names
 
     @property
     def skills_context(self) -> str:
@@ -471,10 +482,18 @@ class Agent:
         to when a tag is dropped.
         """
         if any(
-            "unparseable" in repair or "no 'name'" in repair for repair in parsed.repairs
+            "could not read" in repair or "no 'name'" in repair for repair in parsed.repairs
         ):
             return True
-        if "<tool" in raw or "tool_calls" in raw or "function_call" in raw:
+        if "<tool" in raw or "tool_calls" in raw or "function_call" in raw or "<invoke" in raw:
+            return True
+        # `Action: read` with nothing the ReAct reader could use as input.
+        react = re.search(
+            r"^[ \t]*(?:Action|Действие)[ \t]*:[ \t]*([A-Za-z_][A-Za-z0-9_.-]*)",
+            raw,
+            re.MULTILINE,
+        )
+        if react and (not self.known_tools or react.group(1) in self.known_tools):
             return True
         # A bare JSON object shaped like a call — with a name and an argument
         # object — but naming something unregistered is still an attempt. The

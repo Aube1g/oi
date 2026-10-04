@@ -323,7 +323,9 @@ _SELF_CLOSING = re.compile(r"<" + _TAG + r"\s+(?P<attrs>[^<>]*?)/\s*>", re.DOTAL
 _OPEN_ATTRS = re.compile(r"<" + _TAG + r"\s+(?P<attrs>[^<>]*?)>", re.DOTALL)
 _ATTR = re.compile(r"""([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+)""")
 #: `name: read` / `path: x.py` inside a <tool> block that is not JSON.
-_YAML_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$", re.MULTILINE)
+#: `[ \t]*` and not `\s*`: with `\s*` the pattern ate the newline, so `args:`
+#: swallowed the line *after* it and every nested argument was lost.
+_YAML_LINE = re.compile(r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
 
 
 def _coerce_scalar(text: str) -> Any:
@@ -539,6 +541,14 @@ def _parse_tagged_text(payload: str, known_tools: set[str] | None) -> ToolCall |
     fields: dict[str, Any] = {}
     for key, raw in _YAML_LINE.findall(payload):
         if key in ("args", "arguments", "params"):
+            # `args: {path: x.py}` — flow style, JSON-ish once the quotes are on
+            if raw.lstrip().startswith("{"):
+                try:
+                    value, _ = loads_lenient(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    fields.update(value)
             continue
         fields[key] = _coerce_scalar(raw)
     name = str(fields.pop("name", "") or fields.pop("tool", "") or fields.pop("action", ""))
@@ -549,6 +559,122 @@ def _parse_tagged_text(payload: str, known_tools: set[str] | None) -> ToolCall |
     return ToolCall(name=name, args=fields, raw=payload)
 
 
+#: `Action: read` / `Action Input: {...}` — the ReAct convention. Small models
+#: and Mistral-family endpoints fall back to it constantly, and until this
+#: existed the whole block was handed to the user as if it were the answer.
+_REACT_ACTION = re.compile(
+    r"^[ \t]*(?:Action|Действие)[ \t]*:[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)[ \t]*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_REACT_INPUT = re.compile(
+    r"^[ \t]*(?:Action[ _]?Input|Input|Аргументы|Ввод)[ \t]*:[ \t]*(?P<body>.*)$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def extract_react_calls(
+    prose: str, known_tools: set[str] | None = None
+) -> tuple[list[ToolCall], str, list[str]]:
+    """Read the `Action:` / `Action Input:` shape, and remove what it read.
+
+    The input is usually JSON, but `path=x.py, limit=5` and `key: value` lines
+    are just as common; all three end up as the same arguments.
+    """
+    matches = list(_REACT_ACTION.finditer(prose))
+    if not matches:
+        return [], prose, []
+
+    calls: list[ToolCall] = []
+    repairs: list[str] = []
+    spans: list[tuple[int, int]] = []
+
+    for index, match in enumerate(matches):
+        name = match.group("name")
+        if known_tools is not None and name not in known_tools:
+            continue
+        stop = matches[index + 1].start() if index + 1 < len(matches) else len(prose)
+        block = prose[match.end() : stop]
+        head = _REACT_INPUT.search(block)
+        if head is None:
+            continue
+        args: dict[str, Any] = {}
+        body = head.group("body").strip()
+        if body:
+            if body[0] in "{[":
+                try:
+                    value, _ = loads_lenient(body)
+                except json.JSONDecodeError:
+                    value = None
+                if isinstance(value, dict):
+                    args = value
+            if not args:
+                pairs = dict(_ATTR.findall(body))
+                if not pairs:
+                    pairs = dict(_YAML_LINE.findall(body))
+                args = {key: _coerce_scalar(raw) for key, raw in pairs.items()}
+        calls.append(ToolCall(name=name, args=args, raw=block.strip()))
+        repairs.append(f"read a ReAct call ({name})")
+        spans.append((match.start(), stop if stop < len(prose) else len(prose)))
+
+    for start, end in reversed(spans):
+        prose = prose[:start] + prose[end:]
+    return calls, prose, repairs
+
+
+#: `<function_calls><invoke name="read"><parameter name="path">x.py</parameter>`
+#: — the shape several models emit because their chat template taught them to.
+_INVOKE = re.compile(
+    "<invoke" + r"\s+name=[\"']" + "(?P<name>[^\"']+)" + r"[\"']\s*>(?P<body>.*?)</invoke>",
+    re.DOTALL | re.IGNORECASE,
+)
+_PARAMETER = re.compile(
+    "<parameter" + r"\s+name=[\"']" + "(?P<name>[^\"']+)" + r"[\"']\s*>(?P<value>.*?)</parameter>",
+    re.DOTALL | re.IGNORECASE,
+)
+_FUNCTION_BLOCK = re.compile(r"<function_calls>.*?</function_calls>", re.DOTALL | re.IGNORECASE)
+
+
+def _xml_unescape(text: str) -> str:
+    for entity, char in (("&quot;", '"'), ("&#34;", '"'), ("&apos;", "'"),
+                         ("&lt;", "<"), ("&gt;", ">"), ("&amp;", "&")):
+        text = text.replace(entity, char)
+    return text
+
+
+def extract_xml_invoke_calls(
+    prose: str, known_tools: set[str] | None = None
+) -> tuple[list[ToolCall], str, list[str]]:
+    """Read `<invoke>` blocks; drop the wrapper that carried them."""
+    calls: list[ToolCall] = []
+    repairs: list[str] = []
+    for match in _INVOKE.finditer(prose):
+        name = match.group("name").strip()
+        if known_tools is not None and name not in known_tools:
+            continue
+        body = match.group("body")
+        args: dict[str, Any] = {}
+        for param in _PARAMETER.finditer(body):
+            args[param.group("name").strip()] = _coerce_scalar(
+                _xml_unescape(param.group("value")).strip()
+            )
+        if not args:
+            text = _xml_unescape(body).strip()
+            if text.startswith("{"):
+                try:
+                    value, _ = loads_lenient(text)
+                except json.JSONDecodeError:
+                    value = None
+                if isinstance(value, dict):
+                    args = value
+        calls.append(ToolCall(name=name, args=args, raw=match.group(0)))
+        repairs.append(f"read an XML call ({name})")
+
+    if calls:
+        prose = _FUNCTION_BLOCK.sub("", prose)
+        prose = _INVOKE.sub("", prose)
+    return calls, prose, repairs
+
+
 def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedResponse:
     """Parse a complete model turn into text + tool calls + done marker."""
     repairs: list[str] = []
@@ -557,6 +683,7 @@ def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedR
         repairs.append("closed an unterminated code fence")
 
     calls: list[ToolCall] = []
+    unread: list[str] = []
 
     # `<tool name="read" path="x.py"/>` has no closing tag, so the span
     # extractor would treat everything after it as one unterminated block.
@@ -607,7 +734,11 @@ def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedR
             # both shapes real models produce inside the tag.
             call = _parse_tagged_text(payload, known_tools)
             if call is None:
-                repairs.append(f"skipped an unparseable <tool> block at offset {start}")
+                # Put it back rather than swallowing it: a payload nobody can
+                # read is exactly what the recovery turn has to see, and the
+                # user must not be left with an empty answer either.
+                repairs.append(f"could not read the <tool> block at offset {start}")
+                unread.append(payload.strip())
                 continue
             calls.append(call)
             repairs.append(f"read a non-JSON call ({call.name})")
@@ -624,7 +755,16 @@ def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedR
                 args = inline
                 repairs.append(f"read inline arguments for {name}")
         if not isinstance(name, str) or not name:
-            repairs.append("skipped a tool block with no 'name'")
+            # `name: read\nargs: {...}` — the outer braces of the *arguments*
+            # made the JSON reader claim the block; the YAML reader can still
+            # make sense of it.
+            call = _parse_tagged_text(payload, known_tools)
+            if call is None:
+                repairs.append("skipped a tool block with no 'name'")
+                unread.append(payload.strip())
+                continue
+            calls.append(call)
+            repairs.append(f"read a non-JSON call ({call.name})")
             continue
 
         calls.append(ToolCall(name=name, args=args, raw=payload))
@@ -653,6 +793,22 @@ def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedR
     bare, prose, bare_repairs = extract_bare_calls(prose, known_tools)
     calls.extend(bare)
     repairs.extend(bare_repairs)
+
+    for reader in (extract_react_calls, extract_xml_invoke_calls):
+        found, prose, reader_repairs = reader(prose, known_tools)
+        calls.extend(found)
+        repairs.extend(reader_repairs)
+
+    # An empty wrapper left behind by a reader (`<tool_call></tool_call>`)
+    # is not prose the user should read.
+    prose = re.sub(r"<tool_call>\s*</tool_call>", "", prose, flags=re.IGNORECASE)
+    prose = re.sub(r"<(tool|function_calls)>\s*</(tool|function_calls)>", "", prose,
+                   flags=re.IGNORECASE)
+
+    if unread and not calls:
+        # Nothing callable was understood anywhere in the reply, so this is the
+        # model's only output: show it, wrapped so nobody mistakes it for prose.
+        prose = "\n".join([prose.strip()] + [f"<tool>{item}</tool>" for item in unread]).strip()
 
     return ParsedResponse(
         text=prose.strip(), calls=calls, done=done, done_text=done_text, repairs=repairs
