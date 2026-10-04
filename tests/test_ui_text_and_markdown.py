@@ -351,3 +351,53 @@ class TestWrapRow:
     def test_wide_glyphs_respect_the_width(self):
         rows = wrap_row([("日本語" * 10, "normal")], 8)
         assert all(display_width("".join(t for t, _ in r)) <= 8 for r in rows)
+
+
+class TestNestingAndTasks:
+    """The list fixes: nesting, tick-boxes, and `==выделение==`.
+
+    Before these, a sub-item rendered at the same indent as its parent (the
+    marker regex matches every level, so the depth arrived in the same block
+    and was thrown away), and `==highlight==` came out with its equals signs
+    still in the text.
+    """
+
+    def test_a_nested_item_is_indented(self):
+        text = render_plain("- родитель\n  - ребёнок\n", 40)
+        lines = text.split("\n")
+        assert lines[0].lstrip().startswith("•")
+        assert lines[1].startswith(" " * (len(lines[0]) - len(lines[0].lstrip()) + 2))
+
+    def test_deeper_nesting_keeps_stepping(self):
+        text = render_plain("- один\n  - два\n    - три\n", 40)
+        indents = [len(line) - len(line.lstrip()) for line in text.split("\n")]
+        assert indents[0] < indents[1] < indents[2]
+
+    def test_a_task_list_uses_tick_boxes(self):
+        text = render_plain("- [ ] сделать\n- [x] готово\n", 40)
+        assert "☐ сделать" in text
+        assert "☑ готово" in text
+
+    def test_highlight_is_not_left_with_its_markers(self):
+        text = strip_inline("это ==важное== слово")
+        assert text == "это важное слово"
+
+    def test_highlight_is_a_style_the_painters_know(self):
+        from xli.tui.app import STYLE_ATTRS
+        from xli.ui.markdown import MARK
+
+        assert MARK in STYLE_ATTRS
+
+    def test_every_markdown_style_has_a_painter_entry(self):
+        """A style the renderer can emit but the TUI cannot paint is a bug."""
+        from xli.tui.app import STYLE_ATTRS
+        from xli.ui import markdown as md
+
+        emitted = {
+            md.NORMAL, md.DIM, md.BOLD, md.ACCENT, md.GOOD, md.WARN, md.BAD,
+            md.CODE, md.QUOTE, md.HEADING, md.HEADING2, md.HEADING3, md.LINK,
+            md.ITALIC, md.STRIKE, md.MARK, md.RULE, md.KW, md.STR, md.NUM,
+            md.COM, md.FN, md.OP,
+        }
+        missing = sorted(style for style in emitted if style not in STYLE_ATTRS)
+        assert not missing, f"no curses attributes for {missing}"

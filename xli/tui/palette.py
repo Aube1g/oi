@@ -30,6 +30,7 @@ QUOTE = "quote"
 LINK = "link"
 ITALIC = "italic"
 STRIKE = "strike"
+MARK = "mark"
 #: The frame: the box around the interface. Violet-grey — present, but never
 #: competing with the content it holds.
 FRAME = "frame"
@@ -134,6 +135,12 @@ TOOL_GLYPH: dict[str, str] = {
     "json_query": "{}",
     "repo_map": "▦",
     "dep_graph": "⛓",
+    "chart": "▁",
+    "delegate": "◆",
+    "search_code": "⌕",
+    "find_symbol": "❖",
+    "read_slice": "✂",
+    "web_search": "⌾",
 }
 
 

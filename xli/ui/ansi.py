@@ -57,6 +57,9 @@ ANSI_FOR_STYLE: dict[str, str | None] = {
     "link": "4;35",
     "italic": "3",
     "strike": "9",
+    # `==выделение==`: a highlighter stroke. Reverse video is the closest a
+    # terminal gets to one, and it survives every colour scheme.
+    "mark": "7",
     # Syntax highlighting inside fences.
     "kw": "1;35",
     "str": "32",

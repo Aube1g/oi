@@ -87,7 +87,10 @@ class TuiState:
 STYLE_ATTRS = (
     "normal", "dim", "bold", "accent", "good", "warn", "bad",
     "heading", "heading2", "heading3", "code", "quote", "link",
-    "italic", "strike",
+    "italic", "strike", "mark", "kw", "str", "num", "com", "fn", "op",
+    # A horizontal rule: the renderer emits it, so the painters must know it
+    # or `---` prints as an unstyled run of dashes.
+    "rule",
 )
 
 
@@ -129,6 +132,16 @@ def _init_colors() -> dict[str, int]:
         "link": (81, -1),
         "italic": (146, -1),
         "strike": (244, -1),
+        # `==выделение==` and the code-token colours the markdown renderer
+        # emits; without them those spans would paint unstyled.
+        "mark": (222, -1),
+        "kw": (177, -1),
+        "str": (150, -1),
+        "num": (216, -1),
+        "com": (245, -1),
+        "fn": (153, -1),
+        "op": (110, -1),
+        "rule": (103, -1),
     }
     mapping = {"normal": curses.A_NORMAL}
     for index, (name, (fg, bg)) in enumerate(pairs.items(), start=1):
@@ -145,6 +158,7 @@ def _init_colors() -> dict[str, int]:
     mapping["quote"] |= curses.A_ITALIC if hasattr(curses, "A_ITALIC") else 0
     mapping["link"] |= curses.A_UNDERLINE
     mapping["strike"] |= curses.A_STANDOUT
+    mapping["mark"] |= curses.A_REVERSE
     return mapping
 
 

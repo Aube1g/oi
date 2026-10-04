@@ -45,6 +45,9 @@ HEADING3 = "heading3"
 LINK = "link"
 ITALIC = "italic"
 STRIKE = "strike"
+#: `==выделение==`. GFM's extension, and the one models reach for when they
+#: want to point at the important word in a paragraph.
+MARK = "mark"
 #: Horizontal rules get a style of their own so the painters can render them
 #: as a gradient instead of a grey dash line.
 RULE = "rule"
@@ -260,6 +263,10 @@ def parse(markdown: str) -> list[Block]:
 def _make_item(match: re.Match, is_ordered: bool) -> dict:
     """One list item, with its marker state pulled apart."""
     raw = match.group(3)
+    # The item's own indent, not the block's: a nested list arrives in the
+    # same block (the marker regex matches every level), and without this the
+    # renderer cannot tell a sub-item from its parent.
+    indent = len(match.group(1))
     task = _TASK.match(raw)
     if task:
         return {
@@ -267,12 +274,14 @@ def _make_item(match: re.Match, is_ordered: bool) -> dict:
             "number": int(match.group(2)) if is_ordered else 0,
             "checked": task.group(1).lower() == "x",
             "task": True,
+            "indent": indent,
         }
     return {
         "text": raw,
         "number": int(match.group(2)) if is_ordered else 0,
         "checked": False,
         "task": False,
+        "indent": indent,
     }
 
 
@@ -290,6 +299,7 @@ _EMPHASIS = (
     ("**", BOLD),
     ("__", BOLD),
     ("~~", STRIKE),
+    ("==", MARK),
     ("*", ITALIC),
     ("_", ITALIC),
 )
@@ -337,6 +347,9 @@ def inline_spans(text: str, base: str = NORMAL, *, _depth: int = 0) -> list[Span
             if match:
                 flush()
                 label = match.group(1) or match.group(2)
+                # The label only: `[текст](url)` is how a model cites a source,
+                # and printing the address doubles the width of every citation
+                # for information the reader rarely needs at that moment.
                 out.append((label, LINK))
                 index += match.end()
                 continue
@@ -484,7 +497,15 @@ def render_rows(markdown: str, width: int, *, indent: int = 0) -> list[Row]:
             emit([(f"{gutter}└" + "─" * fill, DIM)])
 
         elif block.kind == "list":
+            base_indent = min(
+                (int(item.get("indent", 0)) for item in block.items), default=0
+            )
             for number, item in enumerate(block.items, start=1):
+                # Nesting is drawn as indentation of the marker, which is how
+                # a list reads in a terminal; the depth is the item's indent
+                # relative to the shallowest item in the same block.
+                depth = max(0, (int(item.get("indent", 0)) - base_indent) // 2)
+                nest = "  " * depth
                 marker_style = ACCENT
                 if item.get("task"):
                     # A tick box you can read at a glance; the old "[x]" was
@@ -497,12 +518,13 @@ def render_rows(markdown: str, width: int, *, indent: int = 0) -> list[Row]:
                     marker = f"{item.get('number') or number}."
                 else:
                     marker = "•"
-                lead = f"{gutter}  {marker} "
-                marker_cell = f"{gutter}  {marker} "
+                lead = f"{gutter}  {nest}{marker} "
+                marker_cell = f"{gutter}  {nest}{marker} "
                 for row in wrap_row(
                     [(marker_cell, marker_style)] + inline_spans(item["text"]),
                     width,
                     hang=display_width(lead),
+                    keep_leading=True,
                 ):
                     emit(row)
 
@@ -594,8 +616,16 @@ def _render_table(rows: list[list[str]], width: int, gutter: str) -> list[Row]:
     return out
 
 
-def wrap_row(row: Row, width: int, *, hang: int = 0) -> list[Row]:
-    """Word-wrap a span row to `width` cells, preserving each span's style."""
+def wrap_row(
+    row: Row, width: int, *, hang: int = 0, keep_leading: bool = False
+) -> list[Row]:
+    """Word-wrap a span row to `width` cells, preserving each span's style.
+
+    Leading spaces are dropped by default, because a wrapped paragraph must
+    not start with the space that ended the previous line. `keep_leading` asks
+    for them anyway — the list renderer needs it, since its indentation *is*
+    the nesting.
+    """
     from xli.ui.text import char_width, display_width
 
     if width <= 0:
@@ -624,7 +654,7 @@ def wrap_row(row: Row, width: int, *, hang: int = 0) -> list[Row]:
                 start_continuation()
             for word in _words(line):
                 word_width = display_width(word)
-                if word == " " and not current:
+                if word == " " and not current and not (keep_leading and not out):
                     continue
                 if used + word_width > width and current:
                     flush()
